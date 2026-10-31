@@ -241,3 +241,24 @@ test('monthly: first day, last day, and first/last weekday of the month', async 
   assert.equal(describeSchedule(lastSat), 'Monthly on the last Saturday');
   assert.equal(describeSchedule(last), 'Monthly on the last day');
 });
+
+test('history: per-task results, multi-day runs count once, report text', async () => {
+  const { computeHistory, reportText } = await import('../js/history.js');
+  const { setDone: done } = await import('../js/model.js');
+  const s = defaultState();
+  const gym = task({ id: 'gym', title: 'Gym', order: 1, schedule: { type: 'weekly', days: [0, 2, 4] }, startDate: '2026-11-01' });
+  const deep = task({ id: 'deep', title: 'Deep clean', order: 2, schedule: { type: 'weekly', days: [0] }, startDate: '2026-11-01', spanDays: 3 });
+  s.tasks.push(gym, deep);
+  done(s, '2026-11-01', gym, true);           // Sun done
+  done(s, '2026-11-05', gym, true);           // Thu done, Tue missed
+  done(s, { start: '2026-11-01', on: '2026-11-03' }, deep, true); // 3-day run finished on day 3
+  const h = computeHistory(s, '2026-11-01', '2026-11-07', '2026-11-07');
+  const g = h.repeating.find((t) => t.task.id === 'gym');
+  assert.equal(g.done, 2);
+  assert.equal(g.missed, 1);
+  const d = h.repeating.find((t) => t.task.id === 'deep');
+  assert.equal(d.done, 1);
+  assert.equal(d.missed, 0);
+  assert.equal(h.overall.done, 3);
+  assert.match(reportText(h), /Gym \(Sun, Tue, Thu\): 2 of 3 done \(67%\)/);
+});
