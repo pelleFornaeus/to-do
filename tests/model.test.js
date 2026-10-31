@@ -160,3 +160,46 @@ test('"tomorrow ..." in quick add schedules for the next day', () => {
   assert.deepEqual(parseQuickAdd('Tomorrow: vote', SUN), { title: 'vote', key: MON });
   assert.deepEqual(parseQuickAdd('tomorrowland tickets', SUN), { title: 'tomorrowland tickets', key: SUN });
 });
+
+test('level rules: deep every Saturday, complete on the last Saturday', async () => {
+  const { plannedLevel } = await import('../js/model.js');
+  const kitchen = task({
+    schedule: { type: 'daily' },
+    levels: ['Light', 'Normal', 'Deep', 'Complete'],
+    levelDefault: 1,
+    levelRules: [{ level: 3, weekday: 6, nth: 'last' }, { level: 2, weekday: 6, nth: 'every' }],
+  });
+  assert.equal(plannedLevel(kitchen, '2026-11-02'), 1); // Monday: normal
+  assert.equal(plannedLevel(kitchen, '2026-11-21'), 2); // a Saturday: deep
+  assert.equal(plannedLevel(kitchen, '2026-11-28'), 3); // last Saturday: complete
+  kitchen.levelRules = [{ level: 2, weekday: 6, nth: 1 }];
+  assert.equal(plannedLevel(kitchen, '2026-11-07'), 2); // first Saturday
+  assert.equal(plannedLevel(kitchen, '2026-11-14'), 1);
+});
+
+test('steps can belong to any set of levels', () => {
+  const s = defaultState();
+  const kitchen = task({
+    schedule: { type: 'daily' },
+    levels: ['Light', 'Normal', 'Deep'],
+    levelDefault: 1,
+    subtasks: [
+      { id: 'a', title: 'Dishes', in: [0, 1, 2] },
+      { id: 'b', title: 'Quick wipe', in: [0] },
+      { id: 'c', title: 'Fridge', in: [2] },
+    ],
+  });
+  s.tasks.push(kitchen);
+  const names = (lvl) => visibleSubtasks(kitchen, { level: lvl }).map((x) => x.id).join();
+  assert.equal(names(0), 'a,b');
+  assert.equal(names(1), 'a');
+  assert.equal(names(2), 'a,c');
+});
+
+test('older saved tasks (per-weekday levels, "from level" steps) still work', async () => {
+  const { plannedLevel } = await import('../js/model.js');
+  const old = task({ levels: ['L', 'N', 'D'], levelDefault: 0, levelByDay: { 6: 2 }, subtasks: [{ id: 'x', level: 1 }] });
+  assert.equal(plannedLevel(old, '2026-11-07'), 2);
+  assert.equal(visibleSubtasks(old, { level: 0 }).length, 0);
+  assert.equal(visibleSubtasks(old, { level: 2 }).length, 1);
+});

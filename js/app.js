@@ -3,7 +3,7 @@ import {
   WEEKDAYS, addDays, formatDay, formatLongDate, formatMinutes, logicalToday,
 } from './dates.js';
 import {
-  DEFAULT_LEVELS, addMinutes, addQuickTask, deleteTask, describeSchedule, getEntry,
+  DEFAULT_LEVELS, levelRules, stepInLevel, addMinutes, addQuickTask, deleteTask, describeSchedule, getEntry,
   hasLevels, isRepeating, itemsForDay, moveOnceTask, nextOrder, setDone, setLevel,
   parseQuickAdd, setGoal, setMinutes, setSkipped, snapshotPlanned, startTimer, stopTimer,
   toggleSub, uid, visibleSubtasks,
@@ -288,7 +288,7 @@ function blankDraft() {
     useLevels: false,
     levels: [...DEFAULT_LEVELS],
     levelDefault: 1,
-    levelByDay: {},
+    levelRules: [],
     subtasks: [],
     useTime: false,
     timeGoal: { minutes: 60, byDay: {} },
@@ -309,8 +309,12 @@ function draftFromTask(task) {
     useLevels: hasLevels(task),
     levels: hasLevels(task) ? [...task.levels] : [...DEFAULT_LEVELS],
     levelDefault: task.levelDefault ?? 0,
-    levelByDay: { ...(task.levelByDay || {}) },
-    subtasks: structuredClone(task.subtasks || []),
+    levelRules: structuredClone(levelRules(task)).map((r) => ({ ...r, nth: String(r.nth ?? 'every') })),
+    subtasks: (task.subtasks || []).map((sub) => ({
+      id: sub.id,
+      title: sub.title,
+      in: hasLevels(task) ? task.levels.map((_, j) => j).filter((j) => stepInLevel(sub, j)) : [],
+    })),
     useTime: !!task.timeGoal,
     timeGoal: task.timeGoal ? structuredClone({ byDay: {}, ...task.timeGoal }) : d.timeGoal,
     spanDays: task.spanDays || 1,
@@ -395,20 +399,6 @@ function renderEditor() {
         </div>
 
         <div class="card">
-          <h3>Steps</h3>
-          <ul class="ed-subs">
-            ${d.subtasks.map((sub, i) => `
-              <li>
-                <input type="text" data-bind="subtasks.${i}.title" value="${esc(sub.title)}" placeholder="Step ${i + 1}" />
-                ${d.useLevels ? `<select data-bind="subtasks.${i}.level" data-num title="First level that includes this step">${levelOptions(sub.level ?? 0)}</select>` : ''}
-                <button class="icon-btn small" data-ed="remove-sub" data-index="${i}" aria-label="Remove step">×</button>
-              </li>`).join('')}
-          </ul>
-          <button class="btn small" data-ed="add-sub">+ Add step</button>
-          ${d.useLevels && d.subtasks.length ? '<p class="hint">Each step shows at the level you pick and every level above it.</p>' : ''}
-        </div>
-
-        <div class="card">
           <label class="field row">
             <input type="checkbox" data-bind="useLevels" data-rerender ${d.useLevels ? 'checked' : ''} />
             <span><strong>Levels</strong> (like light, normal, deep clean)</span>
@@ -425,15 +415,47 @@ function renderEditor() {
             <p class="hint">The small box is how many days a level takes, e.g. 3 for a complete clean. Leave it empty for the usual.</p>
             <button class="btn small" data-ed="add-level">+ Add level</button>
             <label class="field"><span>Usual level</span><select data-bind="levelDefault" data-num>${levelOptions(d.levelDefault)}</select></label>
-            ${days.length ? `
-              <details class="per-day" ${Object.keys(d.levelByDay).length ? 'open' : ''}>
-                <summary>Different level on some days</summary>
-                ${days.map((wd) => `
-                  <label class="field inline"><span>${WEEKDAYS[wd]}</span>
-                    <select data-bind="levelByDay.${wd}" data-num data-optional>${levelOptions(d.levelByDay[wd], true)}</select>
-                  </label>`).join('')}
-              </details>` : ''}
+            ${s.type !== 'once' ? `
+              <div class="rules">
+                <span class="field-label">Different level on some days</span>
+                ${d.levelRules.map((r, k) => `
+                  <div class="rule">
+                    <div class="rule-line">
+                    <select data-bind="levelRules.${k}.level" data-num aria-label="Level">${levelOptions(r.level)}</select>
+                    <span class="muted">on</span>
+                    <select data-bind="levelRules.${k}.nth" data-rerender aria-label="Which week">
+                      ${[['every', 'every'], ['1', 'first'], ['2', 'second'], ['3', 'third'], ['4', 'fourth'], ['last', 'last']].map(([v, label]) => `<option value="${v}" ${String(r.nth) === v ? 'selected' : ''}>${label}</option>`).join('')}
+                    </select>
+                    <select data-bind="levelRules.${k}.weekday" data-num aria-label="Weekday">
+                      ${WEEKDAYS.map((w, j) => `<option value="${j}" ${Number(r.weekday) === j ? 'selected' : ''}>${w}</option>`).join('')}
+                    </select>
+                    ${r.nth !== 'every' ? '<span class="muted small">of the month</span>' : ''}
+                    </div>
+                    <button class="icon-btn small" data-ed="remove-rule" data-index="${k}" aria-label="Remove rule">×</button>
+                  </div>`).join('')}
+                <button class="btn small" data-ed="add-rule">+ Add rule</button>
+                ${d.levelRules.length ? '<p class="hint">If two rules match the same day, the one with first/last/etc. wins, so “Complete on the last Saturday” beats “Deep every Saturday”.</p>' : ''}
+              </div>` : ''}
           ` : ''}
+        </div>
+
+        <div class="card">
+          <h3>Steps</h3>
+          <ul class="ed-subs">
+            ${d.subtasks.map((sub, i) => `
+              <li class="${d.useLevels ? 'with-levels' : ''}">
+                <div class="step-top">
+                  <input type="text" data-bind="subtasks.${i}.title" value="${esc(sub.title)}" placeholder="Step ${i + 1}" />
+                  <button class="icon-btn small" data-ed="remove-sub" data-index="${i}" aria-label="Remove step">×</button>
+                </div>
+                ${d.useLevels ? `
+                  <div class="step-levels" role="group" aria-label="Levels that include this step">
+                    ${d.levels.map((n, j) => `<button class="chip tiny ${sub.in.includes(j) ? 'on' : ''}" data-ed="step-level" data-index="${i}" data-level="${j}">${esc(n || `Level ${j + 1}`)}</button>`).join('')}
+                  </div>` : ''}
+              </li>`).join('')}
+          </ul>
+          <button class="btn small" data-ed="add-sub">+ Add step</button>
+          ${d.useLevels && d.subtasks.length ? '<p class="hint">Highlighted levels include that step. Tap a level to add or remove it, e.g. leave “Clean the fridge” on Deep and Complete only.</p>' : ''}
         </div>
 
         <div class="card">
@@ -486,6 +508,9 @@ function bindInput(el) {
     value = el.value === '' ? (el.dataset.optional !== undefined ? undefined : 0) : Number(el.value);
   } else value = el.value;
   setPath(d, el.dataset.bind, value);
+  if (el.dataset.bind === 'useLevels' && value) {
+    d.subtasks.forEach((s) => { if (!s.in?.length) s.in = d.levels.map((_, j) => j); });
+  }
   if (el.dataset.rerender !== undefined) renderEditor();
 }
 
@@ -519,10 +544,21 @@ function saveEditor() {
     startDate: sched.type === 'once' ? undefined : d.startDate || today(),
     levels,
     levelDefault: levels.length ? clampLevel(d.levelDefault) : undefined,
-    levelByDay: levels.length ? cleanByDay(d.levelByDay, clampLevel) : {},
+    levelByDay: undefined,
+    levelRules: levels.length
+      ? d.levelRules.map((r) => ({
+        level: clampLevel(r.level),
+        weekday: Math.min(6, Math.max(0, Number(r.weekday) || 0)),
+        nth: r.nth === 'every' || r.nth === 'last' ? r.nth : Number(r.nth),
+      }))
+      : [],
     subtasks: d.subtasks
       .filter((s) => s.title.trim())
-      .map((s) => ({ id: s.id || uid(), title: s.title.trim(), level: levels.length ? clampLevel(s.level) : 0 })),
+      .map((s) => {
+        const step = { id: s.id || uid(), title: s.title.trim() };
+        if (levels.length) step.in = [...new Set(s.in)].filter((j) => j < levels.length).sort((a, b) => a - b);
+        return step;
+      }),
     spanDays: Math.min(14, Math.max(1, Number(d.spanDays) || 1)),
     levelDays: levels.length ? cleanByDay(d.levelDays, (v) => Math.min(14, Math.max(1, Number(v) || 1))) : {},
     timeGoal: d.useTime
@@ -584,7 +620,7 @@ function onClick(e) {
         break;
       }
       case 'add-sub':
-        d.subtasks.push({ id: uid(), title: '', level: 0 });
+        d.subtasks.push({ id: uid(), title: '', in: d.levels.map((_, j) => j) });
         renderEditor();
         $(`[data-bind="subtasks.${d.subtasks.length - 1}.title"]`)?.focus();
         break;
@@ -592,7 +628,26 @@ function onClick(e) {
         d.subtasks.splice(Number(ed.dataset.index), 1);
         renderEditor();
         break;
+      case 'step-level': {
+        const sub = d.subtasks[Number(ed.dataset.index)];
+        const j = Number(ed.dataset.level);
+        sub.in = sub.in.includes(j) ? sub.in.filter((x) => x !== j) : [...sub.in, j];
+        renderEditor();
+        break;
+      }
+      case 'add-rule': {
+        const top = Math.max(0, d.levels.length - 1);
+        d.levelRules.push({ level: Math.min(top, (d.levelDefault ?? 0) + 1), weekday: 6, nth: 'every' });
+        renderEditor();
+        break;
+      }
+      case 'remove-rule':
+        d.levelRules.splice(Number(ed.dataset.index), 1);
+        renderEditor();
+        break;
       case 'add-level':
+        // A new top level includes everything the previous top level did.
+        d.subtasks.forEach((s) => { if (s.in.includes(d.levels.length - 1)) s.in.push(d.levels.length); });
         d.levels.push('');
         renderEditor();
         $(`[data-bind="levels.${d.levels.length - 1}"]`)?.focus();
@@ -601,9 +656,10 @@ function onClick(e) {
         const i = Number(ed.dataset.index);
         d.levels.splice(i, 1);
         const fix = (v) => (v > i ? v - 1 : v === i ? Math.max(0, i - 1) : v);
-        d.subtasks.forEach((s) => { s.level = fix(s.level ?? 0); });
+        d.subtasks.forEach((s) => { s.in = s.in.filter((x) => x !== i).map((x) => (x > i ? x - 1 : x)); });
         d.levelDefault = fix(d.levelDefault ?? 0);
-        for (const k of Object.keys(d.levelByDay)) d.levelByDay[k] = fix(d.levelByDay[k]);
+        d.levelRules = d.levelRules.filter((r) => Number(r.level) !== i)
+          .map((r) => ({ ...r, level: Number(r.level) > i ? Number(r.level) - 1 : Number(r.level) }));
         const days = {};
         for (const [k, v] of Object.entries(d.levelDays)) {
           const n = Number(k);
@@ -714,6 +770,13 @@ function onChange(e) {
 function onInput(e) {
   const el = e.target;
   if (el.dataset.bind && el.dataset.rerender === undefined) bindInput(el);
+  // Renaming a level updates the step buttons without redrawing the form.
+  const m = el.dataset.bind?.match(/^levels\.(\d+)$/);
+  if (m) {
+    document.querySelectorAll(`.step-levels [data-level="${m[1]}"]`).forEach((b) => {
+      b.textContent = el.value || `Level ${Number(m[1]) + 1}`;
+    });
+  }
 }
 
 function exportData() {

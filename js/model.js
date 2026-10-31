@@ -11,8 +11,8 @@
 //   startDate,                       // first day a repeating task applies
 //   completedOn,                     // one-time tasks: day it was finished
 //   levels: ['Light', ...],          // optional; empty means no levels
-//   levelDefault, levelByDay: { weekday: index },
-//   subtasks: [{ id, title, level }], // level = first level that includes this step
+//   levelDefault, levelRules: [{ level, weekday, nth }],  (older: levelByDay)
+//   subtasks: [{ id, title, in: [levelIndex] }], // which levels include the step (older: level)
 //   timeGoal: { minutes, byDay: { weekday: minutes } } | null,
 //   spanDays, levelDays: { levelIndex: days }  // multi-day tasks
 // }
@@ -87,12 +87,50 @@ export function hasLevels(task) {
   return Array.isArray(task.levels) && task.levels.length > 0;
 }
 
+// Level rules, e.g. { level: 2, weekday: 6, nth: 'every' } = deep clean every Saturday,
+// { level: 3, weekday: 6, nth: 'last' } = complete clean on the last Saturday of the month.
+// nth is 'every', 1-4 (first..fourth of the month) or 'last'.
+export function levelRules(task) {
+  if (Array.isArray(task.levelRules)) return task.levelRules;
+  // older format: { weekday: level }
+  return Object.entries(task.levelByDay || {}).map(([wd, level]) => ({ level, weekday: Number(wd), nth: 'every' }));
+}
+
+export function ruleMatches(rule, key) {
+  if (weekday(key) !== Number(rule.weekday)) return false;
+  const nth = rule.nth ?? 'every';
+  if (nth === 'every') return true;
+  const [y, m, d] = key.split('-').map(Number);
+  if (nth === 'last') return d + 7 > new Date(y, m, 0).getDate();
+  return Math.ceil(d / 7) === Number(nth);
+}
+
 export function plannedLevel(task, key) {
   if (!hasLevels(task)) return null;
-  const byDay = task.levelByDay || {};
-  const wd = weekday(key);
-  const idx = byDay[wd] ?? task.levelDefault ?? 0;
+  let idx = task.levelDefault ?? 0;
+  let best = -1;
+  // A "first/last Saturday" rule beats an "every Saturday" rule; otherwise the later rule wins.
+  for (const r of levelRules(task)) {
+    if (!ruleMatches(r, key)) continue;
+    const score = (r.nth ?? 'every') === 'every' ? 0 : 1;
+    if (score >= best) { best = score; idx = Number(r.level); }
+  }
   return Math.min(Math.max(0, idx), task.levels.length - 1);
+}
+
+export function describeRule(rule, levels) {
+  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const nthName = { every: 'Every', 1: 'First', 2: 'Second', 3: 'Third', 4: 'Fourth', last: 'Last' }[rule.nth ?? 'every'];
+  const day = days[rule.weekday];
+  const when = (rule.nth ?? 'every') === 'every' ? `Every ${day}` : `${nthName} ${day} of the month`;
+  return `${levels[rule.level] ?? ''}: ${when}`;
+}
+
+// Whether a step is part of a level. Steps either list their levels (`in`),
+// or (older format) start at a level and carry on to every level above it.
+export function stepInLevel(step, level) {
+  if (Array.isArray(step.in)) return step.in.includes(level);
+  return (step.level ?? 0) <= level;
 }
 
 export function plannedGoal(task, key) {
@@ -148,7 +186,7 @@ export function visibleSubtasks(task, entry) {
   const subs = task.subtasks || [];
   if (!hasLevels(task)) return subs;
   const lvl = entry.level ?? 0;
-  return subs.filter((s) => (s.level ?? 0) <= lvl);
+  return subs.filter((s) => stepInLevel(s, lvl));
 }
 
 // How a stored entry looks on a particular day: a task finished later shows as
