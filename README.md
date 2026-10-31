@@ -8,7 +8,7 @@ A daily to-do list that runs entirely in your browser. No AI, no server, no acco
 - **Levels.** Light, normal, deep, complete (or your own names). Each step picks which levels it belongs to, and rules set the level by day, e.g. deep every Saturday and complete on the last Saturday of the month.
 - **Multi-day tasks.** A task or a level can take several days (e.g. a 3-day complete clean). It shows "Day 2 of 3" and keeps checked steps.
 - **Time goals.** e.g. "Study language" for 1 hour, with different goals on some days. Log time with quick buttons or a timer.
-- **History.** Every day's results are kept for reports (coming in a later step).
+- **History.** A History tab shows completion rates, per-task results (e.g. gym about 2.5× a week), levels done and time logged, with charts for 7 days to all time. "Copy summary for Claude" copies a text report to paste into Claude for a written review.
 
 ## Install on iPhone
 

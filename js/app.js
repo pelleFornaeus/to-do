@@ -1,5 +1,8 @@
 import { store } from './store.js';
 import {
+  computeHistory, perWeek, rangeStart, reportText, shortDate, weeklyBuckets,
+} from './history.js';
+import {
   WEEKDAYS, addDays, formatDay, formatLongDate, formatMinutes, logicalToday,
 } from './dates.js';
 import {
@@ -20,6 +23,7 @@ const ui = {
   expanded: new Set(),
   doneOpen: false,
   editor: null, // draft task being edited
+  histRange: '30',
 };
 
 const S = () => store.state;
@@ -39,6 +43,7 @@ function render() {
   const main = $('#main');
   if (ui.tab === 'today') main.innerHTML = renderToday();
   else if (ui.tab === 'tasks') main.innerHTML = renderTasks();
+  else if (ui.tab === 'history') main.innerHTML = renderHistory();
   else main.innerHTML = renderSettings();
   renderEditor();
 }
@@ -234,6 +239,192 @@ function renderTasks() {
       : '<p class="empty">No open one-time tasks.</p>'}
   `;
 }
+
+// ---------- History ----------
+
+const pctText = (r) => (r == null ? '–' : `${Math.round(r * 100)}%`);
+
+function currentHistory() {
+  const t = today();
+  return computeHistory(S(), rangeStart(ui.histRange, t, S()), t, t);
+}
+
+function renderHistory() {
+  const ranges = [['7', '7 days'], ['30', '30 days'], ['90', '3 months'], ['365', '1 year'], ['all', 'All']];
+  const head = `
+    <header class="page-header"><h1>History</h1></header>
+    <div class="levels range-row" role="group" aria-label="Time range">
+      ${ranges.map(([v, l]) => `<button class="chip ${ui.histRange === v ? 'on' : ''}" data-action="hist-range" data-range="${v}">${l}</button>`).join('')}
+    </div>`;
+  if (!S().tasks.length) return `${head}<p class="empty">Nothing to show yet. Your history builds up as you use the app.</p>`;
+
+  const h = currentHistory();
+  const o = h.overall;
+  const tiles = [
+    ['Tasks done', pctText(o.rate), `${o.done} done · ${o.missed} missed`],
+    ['Everything done', `${o.perfectDays}`, `of ${o.activeDays} day${o.activeDays === 1 ? '' : 's'}`],
+  ];
+  if (o.goalMinutes) tiles.push(['Time logged', formatMinutes(o.minutes), `of ${formatMinutes(o.goalMinutes)} goal`]);
+  if (o.skipped) tiles.push(['Skipped', `${o.skipped}`, 'on purpose']);
+
+  return `
+    ${head}
+    <div class="tiles">
+      ${tiles.map(([label, value, sub]) => `
+        <div class="tile"><span class="tile-label">${label}</span><strong>${value}</strong><span class="tile-sub">${sub}</span></div>`).join('')}
+    </div>
+
+    <div class="card">
+      <h2 class="section tight">${h.dayCount > 60 ? 'Done each week' : 'Done each day'}</h2>
+      ${completionChart(h)}
+    </div>
+
+    <h2 class="section">Repeating tasks</h2>
+    ${h.repeating.length ? `<ul class="task-list stats">${h.repeating.map((t) => taskStatRow(t, h)).join('')}</ul>` : '<p class="empty">No repeating tasks in this period.</p>'}
+
+    ${h.repeating.filter((t) => t.task.timeGoal).map((t) => `
+      <div class="card">
+        <h2 class="section tight">${esc(t.task.title)}: time per day</h2>
+        ${timeChart(t, h)}
+      </div>`).join('')}
+
+    <h2 class="section">One-time tasks</h2>
+    <div class="card">
+      <p class="flush-p"><strong>${h.oneTime.done}</strong> done${h.oneTime.missed ? `, <strong>${h.oneTime.missed}</strong> not done` : ''}${h.oneTime.open ? `, ${h.oneTime.open} open today` : ''}.</p>
+      ${h.oneTime.tasks.filter((t) => t.missed).length ? `<p class="hint flush">Not done: ${h.oneTime.tasks.filter((t) => t.missed).map((t) => esc(t.task.title)).join(', ')}</p>` : ''}
+    </div>
+
+    <h2 class="section">AI summary</h2>
+    <div class="card">
+      <p class="flush-p">Copy a summary of this period, then paste it into Claude to get a written review with patterns and suggestions. Nothing is sent anywhere by the app.</p>
+      <div class="btn-row"><button class="btn primary" data-action="copy-report">Copy summary for Claude</button></div>
+      <details class="per-day"><summary>See what gets copied</summary><pre class="report">${esc(reportText(h))}</pre></details>
+    </div>
+  `;
+}
+
+function taskStatRow(t, h) {
+  const extra = [];
+  const lv = Object.entries(t.levels);
+  if (lv.length) extra.push(lv.map(([n, c]) => `${esc(n)} ${c}`).join(' · '));
+  if (t.task.timeGoal) extra.push(`${formatMinutes(t.minutes)} of ${formatMinutes(t.goal)} · goal met ${t.goalMet} of ${t.timeRuns}`);
+  if (t.skipped) extra.push(`${t.skipped} skipped`);
+  const width = t.rate == null ? 0 : Math.round(t.rate * 100);
+  return `
+    <li class="stat-row">
+      <div class="stat-top">
+        <span class="title">${esc(t.task.title)}</span>
+        <strong>${pctText(t.rate)}</strong>
+      </div>
+      <div class="bar" data-tip="${esc(`${t.task.title}: ${t.done} of ${t.counted} done`)}"><span style="width:${width}%"></span></div>
+      <div class="muted small">${t.done} of ${t.counted} done · about ${perWeek(t.done, t.days).toFixed(1)}× a week${t.open ? ' · open today' : ''}</div>
+      ${extra.length ? `<div class="muted small">${extra.join(' · ')}</div>` : ''}
+    </li>`;
+}
+
+// Bars show the share of the list that got done; the pale column behind is the whole list.
+function completionChart(h) {
+  const weekly = h.dayCount > 60;
+  const data = weekly ? weeklyBuckets(h.days) : h.days;
+  const W = 640; const H = 180; const top = 10; const bottom = 30; const left = 52;
+  const plotH = H - top - bottom;
+  const step = (W - left) / data.length;
+  const bw = Math.max(2, Math.min(28, step - 2));
+  const y = (r) => top + plotH * (1 - r);
+  const grid = [0, 0.5, 1].map((r) => `
+    <line x1="${left}" x2="${W}" y1="${y(r)}" y2="${y(r)}" class="grid" />
+    <text x="${left - 6}" y="${y(r) + 4}" class="axis" text-anchor="end">${r * 100}%</text>`).join('');
+  const bars = data.map((d, i) => {
+    const x = left + i * step + (step - bw) / 2;
+    const label = weekly ? `${shortDate(d.key)}–${shortDate(d.endKey)}` : shortDate(d.key);
+    if (!d.total) return `<rect x="${x}" y="${top}" width="${bw}" height="${plotH}" class="hit" data-tip="${label}: nothing planned" />`;
+    const r = d.done / d.total;
+    const bh = Math.max(r > 0 ? 3 : 0, plotH * r);
+    const rad = Math.min(4, bw / 2);
+    return `
+      <rect x="${x}" y="${top}" width="${bw}" height="${plotH}" rx="${rad}" class="track" />
+      ${bh ? `<path d="${roundedTopBar(x, y(0) - bh, bw, bh, rad)}" class="bar-fill" />` : ''}
+      <rect x="${left + i * step}" y="${top}" width="${step}" height="${plotH}" class="hit" data-tip="${label}: ${d.done} of ${d.total} done" />`;
+  }).join('');
+  const ticks = [0, Math.floor((data.length - 1) / 2), data.length - 1]
+    .filter((v, i, a) => a.indexOf(v) === i)
+    .map((i) => `<text x="${left + i * step + step / 2}" y="${H - 6}" class="axis" text-anchor="middle">${shortDate(data[i].key)}</text>`).join('');
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Share of tasks done ${weekly ? 'each week' : 'each day'}">${grid}${bars}${ticks}</svg>`;
+}
+
+function roundedTopBar(x, y, w, h, r) {
+  r = Math.min(r, h, w / 2);
+  return `M${x},${y + h} V${y + r} Q${x},${y} ${x + r},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${y + h} Z`;
+}
+
+// Minutes logged per day, with a short line marking that day's goal.
+function timeChart(t, h) {
+  const rows = h.days.map((d) => {
+    const item = itemsForDay(S(), d.key, today()).find((i) => i.task.id === t.task.id && i.ref.start === d.key);
+    return { key: d.key, minutes: item ? item.entry.minutes || 0 : null, goal: item ? item.entry.goal || 0 : null };
+  });
+  const max = Math.ceil(Math.max(30, ...rows.map((r) => Math.max(r.minutes || 0, r.goal || 0))) / 30) * 30;
+  const W = 640; const H = 170; const top = 10; const bottom = 30; const left = 62;
+  const plotH = H - top - bottom;
+  const step = (W - left) / rows.length;
+  const bw = Math.max(2, Math.min(28, step - 2));
+  const y = (m) => top + plotH * (1 - m / max);
+  const grid = [0, max / 2, max].map((m) => `
+    <line x1="${left}" x2="${W}" y1="${y(m)}" y2="${y(m)}" class="grid" />
+    <text x="${left - 6}" y="${y(m) + 4}" class="axis" text-anchor="end">${formatMinutes(m)}</text>`).join('');
+  const marks = rows.map((r, i) => {
+    const x = left + i * step + (step - bw) / 2;
+    if (r.minutes == null) return '';
+    const bh = plotH * (r.minutes / max);
+    const tip = `${shortDate(r.key)}: ${formatMinutes(r.minutes)}${r.goal ? ` of ${formatMinutes(r.goal)}` : ''}`;
+    return `
+      ${bh ? `<path d="${roundedTopBar(x, y(0) - bh, bw, bh, Math.min(4, bw / 2))}" class="bar-fill" />` : ''}
+      ${r.goal ? `<line x1="${x - 1}" x2="${x + bw + 1}" y1="${y(r.goal)}" y2="${y(r.goal)}" class="goal" />` : ''}
+      <rect x="${left + i * step}" y="${top}" width="${step}" height="${plotH}" class="hit" data-tip="${tip}" />`;
+  }).join('');
+  const n = rows.length;
+  const ticks = [0, Math.floor((n - 1) / 2), n - 1].filter((v, i, a) => a.indexOf(v) === i)
+    .map((i) => `<text x="${left + i * step + step / 2}" y="${H - 6}" class="axis" text-anchor="middle">${shortDate(rows[i].key)}</text>`).join('');
+  return `
+    <svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Minutes logged per day for ${esc(t.task.title)}">${grid}${marks}${ticks}</svg>
+    <div class="legend"><span class="key bar-key"></span>Time logged <span class="key goal-key"></span>Goal</div>`;
+}
+
+async function copyReport() {
+  const text = reportText(currentHistory());
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+  toast('Copied. Paste it into Claude.');
+}
+
+// Tooltip for chart marks: hover on a computer, tap on a phone.
+function showTip(el, x, y) {
+  const tip = $('#tip');
+  tip.textContent = el.dataset.tip;
+  tip.hidden = false;
+  const w = tip.offsetWidth;
+  tip.style.left = `${Math.min(window.innerWidth - w - 8, Math.max(8, x - w / 2))}px`;
+  tip.style.top = `${Math.max(8, y - tip.offsetHeight - 12)}px`;
+}
+document.addEventListener('pointermove', (e) => {
+  const el = e.target.closest?.('[data-tip]');
+  if (el && e.pointerType === 'mouse') showTip(el, e.clientX, e.clientY);
+  else if (e.pointerType === 'mouse') $('#tip').hidden = true;
+});
+document.addEventListener('pointerdown', (e) => {
+  const el = e.target.closest?.('[data-tip]');
+  if (el) showTip(el, e.clientX, e.clientY);
+  else $('#tip').hidden = true;
+});
+window.addEventListener('scroll', () => { $('#tip').hidden = true; }, { passive: true });
 
 function renderSettings() {
   const st = S().settings;
@@ -763,6 +954,8 @@ function onClick(e) {
     case 'edit': openEditor(task); break;
     case 'new-task': openEditor(null); break;
     case 'export': exportData(); break;
+    case 'hist-range': ui.histRange = btn.dataset.range; render(); break;
+    case 'copy-report': copyReport(); break;
     case 'erase':
       if (confirm('Erase all tasks and history on this device? This cannot be undone.')) {
         store.replace({});
