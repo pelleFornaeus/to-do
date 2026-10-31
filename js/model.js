@@ -12,7 +12,7 @@
 //   completedOn,                     // one-time tasks: day it was finished
 //   levels: ['Light', ...],          // optional; empty means no levels
 //   levelDefault, levelRules: [{ level, weekday, nth }],  (older: levelByDay)
-//   subtasks: [{ id, title, in: [levelIndex] }], // which levels include the step (older: level)
+//   subtasks: [{ id, title, from: 'default' | levelIndex }], // first level that includes the step
 //   timeGoal: { minutes, byDay: { weekday: minutes } } | null,
 //   spanDays, levelDays: { levelIndex: days }  // multi-day tasks
 // }
@@ -126,11 +126,20 @@ export function describeRule(rule, levels) {
   return `${levels[rule.level] ?? ''}: ${when}`;
 }
 
-// Whether a step is part of a level. Steps either list their levels (`in`),
-// or (older format) start at a level and carry on to every level above it.
-export function stepInLevel(step, level) {
-  if (Array.isArray(step.in)) return step.in.includes(level);
-  return (step.level ?? 0) <= level;
+// Whether a step is part of a level. A step has a starting level (`from`) and shows
+// at that level and every level above it. 'default' means the task's usual level,
+// so changing the usual level moves those steps along with it.
+// Older formats: `in` (a list of levels) or `level` (a starting level number).
+export function stepStart(step, task) {
+  if (step.from === 'default') return task?.levelDefault ?? 0;
+  if (step.from != null) return Number(step.from);
+  if (Array.isArray(step.in)) return step.in.length ? Math.min(...step.in) : Infinity;
+  return step.level ?? 0;
+}
+
+export function stepInLevel(step, level, task) {
+  if (step.from == null && Array.isArray(step.in)) return step.in.includes(level);
+  return stepStart(step, task) <= level;
 }
 
 export function plannedGoal(task, key) {
@@ -186,7 +195,7 @@ export function visibleSubtasks(task, entry) {
   const subs = task.subtasks || [];
   if (!hasLevels(task)) return subs;
   const lvl = entry.level ?? 0;
-  return subs.filter((s) => stepInLevel(s, lvl));
+  return subs.filter((s) => stepInLevel(s, lvl, task));
 }
 
 // How a stored entry looks on a particular day: a task finished later shows as
