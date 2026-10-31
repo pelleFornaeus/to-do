@@ -307,28 +307,6 @@ h3 { margin: 0 0 8px; font-size: 15px; }
 .rule { flex-wrap: nowrap; align-items: flex-start; padding: 8px; border: 1px solid var(--line); border-radius: 12px; }
 .rule-line { flex: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 
-/* Level menu next to each step */
+/* Level dropdown next to each step */
 .hint.flush { margin: 0; }
-.step-menu { position: relative; flex: none; max-width: 42%; }
-.step-menu summary {
-  list-style: none; cursor: pointer; display: flex; align-items: center; gap: 4px;
-  padding: 10px 28px 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg);
-  font-size: 14px; color: var(--muted); position: relative; min-height: 44px;
-}
-.step-menu summary span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.step-menu summary::-webkit-details-marker { display: none; }
-.step-menu summary::after { content: "▾"; position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-size: 12px; }
-.step-menu[open] summary { border-color: var(--accent); color: var(--text); }
-.menu-panel {
-  position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; min-width: 180px;
-  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.12); padding: 6px; display: flex; flex-direction: column;
-}
-.menu-item { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 8px; text-align: left; font-size: 15px; }
-.menu-item:hover { background: var(--surface-2); }
-.menu-item.on .mini-check { background: var(--accent); border-color: var(--accent); }
-.menu-item.on .mini-check::after {
-  content: ""; position: absolute; left: 5px; top: 1px; width: 5px; height: 10px;
-  border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
-}
-.step-menu { width: 38%; max-width: 200px; }
+.ed-subs select.step-level { width: 46%; max-width: 220px; flex: none; font-size: 15px; padding: 10px 6px; }

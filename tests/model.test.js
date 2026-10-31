@@ -203,3 +203,22 @@ test('older saved tasks (per-weekday levels, "from level" steps) still work', as
   assert.equal(visibleSubtasks(old, { level: 0 }).length, 0);
   assert.equal(visibleSubtasks(old, { level: 2 }).length, 1);
 });
+
+test('steps on "default" follow the usual level', () => {
+  const kitchen = task({
+    levels: ['Light', 'Normal', 'Deep'],
+    levelDefault: 1,
+    subtasks: [
+      { id: 'a', title: 'Dishes', from: 0 },
+      { id: 'b', title: 'Counters', from: 'default' },
+      { id: 'c', title: 'Fridge', from: 2 },
+    ],
+  });
+  const ids = (lvl) => visibleSubtasks(kitchen, { level: lvl }).map((x) => x.id).join();
+  assert.equal(ids(0), 'a');
+  assert.equal(ids(1), 'a,b');
+  assert.equal(ids(2), 'a,b,c');
+  kitchen.levelDefault = 2; // usual level moved up, so "default" steps move with it
+  assert.equal(ids(1), 'a');
+  assert.equal(ids(2), 'a,b,c');
+});

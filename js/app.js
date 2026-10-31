@@ -3,7 +3,7 @@ import {
   WEEKDAYS, addDays, formatDay, formatLongDate, formatMinutes, logicalToday,
 } from './dates.js';
 import {
-  DEFAULT_LEVELS, levelRules, stepInLevel, addMinutes, addQuickTask, deleteTask, describeSchedule, getEntry,
+  DEFAULT_LEVELS, levelRules, addMinutes, addQuickTask, deleteTask, describeSchedule, getEntry,
   hasLevels, isRepeating, itemsForDay, moveOnceTask, nextOrder, setDone, setLevel,
   parseQuickAdd, setGoal, setMinutes, setSkipped, snapshotPlanned, startTimer, stopTimer,
   toggleSub, uid, visibleSubtasks,
@@ -296,6 +296,14 @@ function blankDraft() {
   };
 }
 
+// Starting level for a step in the editor: 'default' or a level number.
+function stepFrom(sub) {
+  if (sub.from != null) return sub.from === 'default' ? 'default' : Number(sub.from);
+  if (Array.isArray(sub.in)) return sub.in.length ? Math.min(...sub.in) : 'default';
+  if (sub.level != null) return Number(sub.level);
+  return 'default';
+}
+
 function draftFromTask(task) {
   const d = blankDraft();
   return {
@@ -311,7 +319,7 @@ function draftFromTask(task) {
     subtasks: (task.subtasks || []).map((sub) => ({
       id: sub.id,
       title: sub.title,
-      in: hasLevels(task) ? task.levels.map((_, j) => j).filter((j) => stepInLevel(sub, j)) : [],
+      from: stepFrom(sub),
     })),
     useTime: !!task.timeGoal,
     timeGoal: task.timeGoal ? structuredClone({ byDay: {}, ...task.timeGoal }) : d.timeGoal,
@@ -322,7 +330,6 @@ function draftFromTask(task) {
 
 function openEditor(task) {
   ui.editor = task ? draftFromTask(task) : blankDraft();
-  ui.openMenu = null;
   render();
   setTimeout(() => { if (!task) $('#ed-title')?.focus(); }, 50);
 }
@@ -338,24 +345,13 @@ function relevantDays(d) {
   return [];
 }
 
-function stepMenuLabel(d, sub) {
-  const picked = d.levels.map((n, j) => [n || `Level ${j + 1}`, j]).filter(([, j]) => sub.in.includes(j));
-  if (picked.length === d.levels.length) return 'All levels';
-  if (!picked.length) return 'No levels';
-  return picked.map(([n]) => n).join(', ');
-}
-
-function renderStepMenu(d, sub, i) {
+function renderStepLevel(d, sub, i) {
+  const usual = d.levels[d.levelDefault] || `Level ${(d.levelDefault ?? 0) + 1}`;
   return `
-    <details class="step-menu" data-menu="${i}" ${ui.openMenu === i ? 'open' : ''}>
-      <summary aria-label="Levels for this step"><span>${esc(stepMenuLabel(d, sub))}</span></summary>
-      <div class="menu-panel">
-        ${d.levels.map((n, j) => `
-          <button class="menu-item ${sub.in.includes(j) ? 'on' : ''}" data-ed="step-level" data-index="${i}" data-level="${j}">
-            <span class="mini-check"></span>${esc(n || `Level ${j + 1}`)}
-          </button>`).join('')}
-      </div>
-    </details>`;
+    <select class="step-level" data-bind="subtasks.${i}.from" aria-label="Level for this step">
+      <option value="default" ${sub.from === 'default' ? 'selected' : ''}>Default (${esc(usual)})</option>
+      ${d.levels.map((n, j) => `<option value="${j}" ${sub.from !== 'default' && Number(sub.from) === j ? 'selected' : ''}>${esc(n || `Level ${j + 1}`)}</option>`).join('')}
+    </select>`;
 }
 
 function renderEditor() {
@@ -431,7 +427,7 @@ function renderEditor() {
             <button class="btn small" data-ed="add-level">+ Add level</button>
           ${d.levels.length ? `
             <p class="hint">The small box is how many days a level takes, e.g. 3 for a complete clean. Leave it empty for the usual.</p>
-            <label class="field"><span>Usual level</span><select data-bind="levelDefault" data-num>${levelOptions(d.levelDefault)}</select></label>
+            <label class="field"><span>Usual level</span><select data-bind="levelDefault" data-num data-rerender>${levelOptions(d.levelDefault)}</select></label>
             ${s.type !== 'once' ? `
               <div class="rules">
                 <span class="field-label">Different level on some days</span>
@@ -462,12 +458,12 @@ function renderEditor() {
             ${d.subtasks.map((sub, i) => `
               <li>
                 <input type="text" data-bind="subtasks.${i}.title" value="${esc(sub.title)}" placeholder="Step ${i + 1}" />
-                ${d.levels.length ? renderStepMenu(d, sub, i) : ''}
+                ${d.levels.length ? renderStepLevel(d, sub, i) : ''}
                 <button class="icon-btn small" data-ed="remove-sub" data-index="${i}" aria-label="Remove step">×</button>
               </li>`).join('')}
           </ul>
           <button class="btn small" data-ed="add-sub">+ Add step</button>
-          ${d.levels.length && d.subtasks.length ? '<p class="hint">Use the menu next to a step to pick which levels include it, e.g. “Clean the fridge” on Deep only.</p>' : ''}
+          ${d.levels.length && d.subtasks.length ? '<p class="hint">A step shows at the level next to it and every level above. “Default” follows your usual level, so if you change the usual level, those steps move with it.</p>' : ''}
         </div>
 
         <div class="card">
@@ -565,7 +561,7 @@ function saveEditor() {
       .filter((s) => s.title.trim())
       .map((s) => {
         const step = { id: s.id || uid(), title: s.title.trim() };
-        if (levels.length) step.in = [...new Set(s.in)].filter((j) => j < levels.length).sort((a, b) => a - b);
+        if (levels.length) step.from = s.from === 'default' || s.from == null ? 'default' : clampLevel(s.from);
         return step;
       }),
     spanDays: Math.min(14, Math.max(1, Number(d.spanDays) || 1)),
@@ -604,12 +600,6 @@ function toast(msg) {
 // ---------- Events ----------
 
 function onClick(e) {
-  // Close any open step menu when clicking somewhere else.
-  const menu = e.target.closest('.step-menu');
-  document.querySelectorAll('.step-menu[open]').forEach((m) => { if (m !== menu) m.open = false; });
-  if (!menu) ui.openMenu = null;
-  else if (e.target.closest('summary')) ui.openMenu = menu.open ? null : Number(menu.dataset.menu);
-
   const tabBtn = e.target.closest('.tabbar button');
   if (tabBtn) {
     ui.tab = tabBtn.dataset.tab;
@@ -635,8 +625,7 @@ function onClick(e) {
         break;
       }
       case 'add-sub':
-        ui.openMenu = null;
-        d.subtasks.push({ id: uid(), title: '', in: d.levels.map((_, j) => j) });
+        d.subtasks.push({ id: uid(), title: '', from: 'default' });
         renderEditor();
         $(`[data-bind="subtasks.${d.subtasks.length - 1}.title"]`)?.focus();
         break;
@@ -644,14 +633,6 @@ function onClick(e) {
         d.subtasks.splice(Number(ed.dataset.index), 1);
         renderEditor();
         break;
-      case 'step-level': {
-        const sub = d.subtasks[Number(ed.dataset.index)];
-        const j = Number(ed.dataset.level);
-        sub.in = sub.in.includes(j) ? sub.in.filter((x) => x !== j) : [...sub.in, j];
-        ui.openMenu = Number(ed.dataset.index); // keep the menu open while ticking
-        renderEditor();
-        break;
-      }
       case 'add-rule': {
         const top = Math.max(0, d.levels.length - 1);
         d.levelRules.push({ level: Math.min(top, (d.levelDefault ?? 0) + 1), weekday: 6, nth: 'every' });
@@ -663,11 +644,6 @@ function onClick(e) {
         renderEditor();
         break;
       case 'add-level':
-        // The first level includes every step; a new top level includes
-        // everything the previous top level did.
-        d.subtasks.forEach((s) => {
-          if (!d.levels.length || s.in.includes(d.levels.length - 1)) s.in.push(d.levels.length);
-        });
         d.levels.push('');
         renderEditor();
         $(`[data-bind="levels.${d.levels.length - 1}"]`)?.focus();
@@ -676,7 +652,7 @@ function onClick(e) {
         const i = Number(ed.dataset.index);
         d.levels.splice(i, 1);
         const fix = (v) => (v > i ? v - 1 : v === i ? Math.max(0, i - 1) : v);
-        d.subtasks.forEach((s) => { s.in = s.in.filter((x) => x !== i).map((x) => (x > i ? x - 1 : x)); });
+        d.subtasks.forEach((s) => { if (s.from !== 'default') s.from = fix(Number(s.from)); });
         d.levelDefault = fix(d.levelDefault ?? 0);
         d.levelRules = d.levelRules.filter((r) => Number(r.level) !== i)
           .map((r) => ({ ...r, level: Number(r.level) > i ? Number(r.level) - 1 : Number(r.level) }));
