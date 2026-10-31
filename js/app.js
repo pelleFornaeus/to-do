@@ -58,7 +58,7 @@ function renderToday() {
       <button class="icon-btn" data-action="prev-day" aria-label="Previous day">‹</button>
       <div class="day-title">
         <h1>${esc(formatDay(key, t))}</h1>
-        <div class="sub">${esc(formatLongDate(key))}${key !== t ? ` · <button class="link" data-action="go-today">Back to today</button>` : ''}</div>
+        <div class="day-sub">${esc(formatLongDate(key))}${key !== t ? ` · <button class="link" data-action="go-today">Back to today</button>` : ''}</div>
       </div>
       <button class="icon-btn" data-action="next-day" aria-label="Next day">›</button>
     </header>
@@ -201,7 +201,7 @@ function renderTasks() {
     .sort((a, b) => (a.schedule.date || '').localeCompare(b.schedule.date || ''));
 
   const row = (task, sub) => `
-    <li class="task-row" data-id="${task.id}">
+    <li class="task-row ${ui.editor?.id === task.id ? 'selected' : ''}" data-id="${task.id}">
       <button class="task-open" data-action="edit">
         <span class="title">${esc(task.title)}</span>
         <span class="muted small">${esc(sub)}</span>
@@ -320,13 +320,13 @@ function draftFromTask(task) {
 
 function openEditor(task) {
   ui.editor = task ? draftFromTask(task) : blankDraft();
-  renderEditor();
+  render();
   setTimeout(() => { if (!task) $('#ed-title')?.focus(); }, 50);
 }
 
 function closeEditor() {
   ui.editor = null;
-  renderEditor();
+  render();
 }
 
 function relevantDays(d) {

@@ -67,7 +67,7 @@ h3 { margin: 0 0 8px; font-size: 15px; }
 /* Header */
 .day-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .day-title { flex: 1; text-align: center; }
-.day-title .sub { color: var(--muted); font-size: 14px; }
+.day-title .day-sub { color: var(--muted); font-size: 14px; }
 .page-header { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 8px; gap: 12px; }
 
 .icon-btn {
@@ -249,3 +249,45 @@ h3 { margin: 0 0 8px; font-size: 15px; }
 .toast[hidden] { display: none; }
 .field.inline > span.days-input { width: auto; }
 .days-input input { padding: 8px 4px !important; }
+
+/* ---------- Computer layout ---------- */
+.brand { display: none; }
+
+@media (min-width: 960px) {
+  :root { --sidebar-w: 200px; --panel-w: 480px; }
+
+  body { padding-left: var(--sidebar-w); }
+  body.modal-open { overflow: auto; padding-right: var(--panel-w); }
+
+  .tabbar {
+    top: 0; right: auto; width: var(--sidebar-w);
+    flex-direction: column; justify-content: flex-start; gap: 4px;
+    padding: 24px 12px; border-top: 0; border-right: 1px solid var(--line);
+    background: var(--surface); backdrop-filter: none; -webkit-backdrop-filter: none;
+  }
+  .brand { display: block; font-size: 20px; font-weight: 700; letter-spacing: -0.02em; padding: 0 12px 16px; }
+  .tabbar button {
+    flex: none; max-width: none; height: 44px; width: 100%;
+    flex-direction: row; justify-content: flex-start; gap: 12px; padding: 0 12px;
+    border-radius: 10px; font-size: 15px;
+  }
+  .tabbar button:hover { background: var(--surface-2); }
+  .tabbar button.active { background: var(--accent-soft); }
+  .tabbar svg { width: 20px; height: 20px; }
+
+  .main { max-width: 760px; padding: 32px 32px 48px; }
+
+  .toast { bottom: 24px; }
+
+  /* Editor becomes a side panel next to the list instead of a pop-up. */
+  .overlay { left: auto; width: var(--panel-w); background: none; align-items: stretch; }
+  .sheet {
+    height: 100%; max-width: none; border-radius: 0;
+    border-left: 1px solid var(--line); box-shadow: -8px 0 24px rgba(0,0,0,0.06);
+    animation: none;
+  }
+
+  .task-row.selected { background: var(--accent-soft); }
+  .task-open:hover, .item-main:hover { background: color-mix(in srgb, var(--surface-2) 50%, transparent); }
+  .item-main { border-radius: 8px; padding-left: 8px; }
+}
