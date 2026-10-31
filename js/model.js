@@ -15,9 +15,10 @@
 //   levelDefault, levelRules: [{ level, weekday, nth }],  (older: levelByDay)
 //   subtasks: [{ id, title, from: 'default' | levelIndex }], // first level that includes the step
 //   timeGoal: { minutes, byDay: { weekday: minutes } } | null,
-//   spanDays, levelDays: { levelIndex: days }  // multi-day tasks
+//   spanDays, levelDays: { levelIndex: days },  // multi-day tasks
+//   pauses: [{ from, to? }]                     // paused days don't show or count
 // }
-// DayRecord = { planned: [taskId], items: { taskId: Entry } }  (entries live on a run's first day)
+// DayRecord = { planned: [taskId], items: { taskId: Entry }, dayOff?: { note } }  (entries live on a run's first day)
 // Entry = { done, doneOn, doneAt, skipped, level, goal, minutes, subs: { subId: true }, timerStartedAt }
 
 import { weekday, diffDays, addDays } from './dates.js';
@@ -41,11 +42,66 @@ export function isRepeating(task) {
   return task.schedule && task.schedule.type !== 'once';
 }
 
+// ---------- Pauses ----------
+// task.pauses = [{ from, to }]; no `to` means paused until resumed.
+
+export function isPaused(task, key) {
+  return (task.pauses || []).some((p) => key >= p.from && (!p.to || key <= p.to));
+}
+
+export function activePause(task, key) {
+  return (task.pauses || []).find((p) => key >= p.from && (!p.to || key <= p.to))
+    || (task.pauses || []).find((p) => p.from > key); // or an upcoming one
+}
+
+export function pauseTask(task, from, to = null) {
+  task.pauses = [...(task.pauses || []), { from, ...(to ? { to } : {}) }];
+  task.updatedAt = Date.now();
+}
+
+// End any pause that covers `key` so the task is back from `key` on.
+export function resumeTask(task, key) {
+  task.pauses = (task.pauses || [])
+    .map((p) => {
+      if (key >= p.from && (!p.to || key <= p.to)) {
+        return p.from >= key ? null : { ...p, to: addDays(key, -1) };
+      }
+      return p;
+    })
+    .filter(Boolean);
+  task.updatedAt = Date.now();
+}
+
+// ---------- Days off ----------
+// A day off (sick day, travel day...) never counts against you in history.
+
+export function isDayOff(state, key) {
+  return !!state.days[key]?.dayOff;
+}
+
+export function setDayOff(state, key, on, note = '') {
+  if (!state.days[key]) state.days[key] = { planned: [], items: {} };
+  if (on) state.days[key].dayOff = { note };
+  else delete state.days[key].dayOff;
+}
+
+// ---------- Clearing history ----------
+// Forget everything before `key` and start history fresh from that day.
+
+export function clearHistoryBefore(state, key) {
+  for (const k of Object.keys(state.days)) if (k < key) delete state.days[k];
+  // One-time tasks finished before then are done with; drop them too.
+  state.tasks = state.tasks.filter((t) => !(t.schedule?.type === 'once' && t.completedOn && t.completedOn < key));
+  state.tasks = state.tasks.filter((t) => !(t.archived && !Object.values(state.days).some((d) => d.items?.[t.id])));
+  state.settings.historyStart = key;
+}
+
 export function isScheduledOn(task, key) {
   const s = task.schedule || { type: 'once' };
   if (s.type === 'once') return s.date === key;
   if (task.archived) return false;
   if (task.startDate && key < task.startDate) return false;
+  if (isPaused(task, key)) return false;
   switch (s.type) {
     case 'daily':
       return true;

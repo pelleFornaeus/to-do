@@ -1,7 +1,7 @@
 // History and trends: works out how things went over a range of days.
 // Pure functions on the saved state, so they can be tested without a browser.
 import { addDays, diffDays, formatMinutes, fromKey } from './dates.js';
-import { describeSchedule, getEntry, isRepeating, itemsForDay } from './model.js';
+import { describeSchedule, getEntry, isDayOff, isRepeating, itemsForDay } from './model.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 export const shortDate = (key) => { const d = fromKey(key); return `${MONTHS[d.getMonth()]} ${d.getDate()}`; };
@@ -27,12 +27,16 @@ function doneThatDay(item, key) {
 
 export function computeHistory(state, fromKey, toKey, todayKey) {
   if (toKey > todayKey) toKey = todayKey;
+  const historyStart = state.settings?.historyStart;
+  if (historyStart && fromKey < historyStart) fromKey = historyStart;
+  if (fromKey > toKey) fromKey = toKey;
   const days = [];
   const runs = new Map(); // one entry per run of a task (a multi-day run counts once)
   const firstSeen = new Map(); // first day each task was on the list in this range
 
   for (let key = fromKey; key <= toKey; key = addDays(key, 1)) {
     const items = itemsForDay(state, key, todayKey);
+    const dayOff = isDayOff(state, key);
     let total = 0;
     let done = 0;
     let skipped = 0;
@@ -44,11 +48,13 @@ export function computeHistory(state, fromKey, toKey, todayKey) {
       }
       if (!firstSeen.has(item.task.id)) firstSeen.set(item.task.id, key);
       const id = `${item.task.id}|${item.ref.start}`;
-      const run = runs.get(id) || { task: item.task, start: item.ref.start, lastDay: key };
+      const run = runs.get(id) || { task: item.task, start: item.ref.start, lastDay: key, dayOff: false };
       run.lastDay = key;
+      if (dayOff) run.dayOff = true;
       runs.set(id, run);
     }
-    days.push({ key, total, done, skipped });
+    // On a day off only what got done counts; nothing is missed.
+    days.push({ key, total: dayOff ? done : total, done, skipped, dayOff });
   }
 
   // Per task results.
@@ -57,9 +63,11 @@ export function computeHistory(state, fromKey, toKey, todayKey) {
     const entry = getEntry(state, run.start, run.task);
     const t = byTask.get(run.task.id) || {
       task: run.task, done: 0, missed: 0, skipped: 0, open: 0,
-      levels: {}, minutes: 0, goal: 0, goalMet: 0, timeRuns: 0, doneDays: [],
+      levels: {}, minutes: 0, goal: 0, goalMet: 0, timeRuns: 0, doneDays: [], excused: 0,
     };
+    const finished = entry.done && (!entry.doneOn || entry.doneOn <= toKey);
     if (entry.skipped) t.skipped++;
+    else if (!finished && run.dayOff) t.excused++; // fell on a day off
     else if (entry.done && (!entry.doneOn || entry.doneOn <= toKey)) {
       t.done++;
       t.doneDays.push(entry.doneOn || run.start);
@@ -69,7 +77,7 @@ export function computeHistory(state, fromKey, toKey, todayKey) {
       }
     } else if (run.lastDay === todayKey) t.open++; // still today's to-do, not missed yet
     else t.missed++;
-    if (run.task.timeGoal) {
+    if (run.task.timeGoal && !(run.dayOff && !finished)) {
       t.timeRuns++;
       t.minutes += entry.minutes || 0;
       t.goal += entry.goal || 0;
@@ -111,8 +119,9 @@ export function computeHistory(state, fromKey, toKey, todayKey) {
       skipped: sum(tasks, (t) => t.skipped),
       open: sum(tasks, (t) => t.open),
       rate: overallDone + overallMissed ? overallDone / (overallDone + overallMissed) : null,
-      perfectDays: pastDays.filter((d) => d.total > 0 && d.done === d.total).length,
-      activeDays: pastDays.filter((d) => d.total > 0).length,
+      perfectDays: pastDays.filter((d) => !d.dayOff && d.total > 0 && d.done === d.total).length,
+      activeDays: pastDays.filter((d) => !d.dayOff && d.total > 0).length,
+      daysOff: days.filter((d) => d.dayOff).length,
       minutes: sum(tasks, (t) => t.minutes),
       goalMinutes: sum(tasks, (t) => t.goal),
     },
@@ -151,6 +160,7 @@ export function reportText(h) {
   const o = h.overall;
   lines.push(`Overall: ${pct(o.rate)} of tasks done (${o.done} done, ${o.missed} missed, ${o.skipped} skipped${o.open ? `, ${o.open} still open today` : ''}).`);
   lines.push(`Everything done on ${o.perfectDays} of ${o.activeDays} days.`);
+  if (o.daysOff) lines.push(`Days off (sick, travel, etc., not counted): ${o.daysOff}.`);
   if (o.goalMinutes) lines.push(`Time logged: ${formatMinutes(o.minutes)} of ${formatMinutes(o.goalMinutes)} planned.`);
   lines.push('');
   lines.push('Repeating tasks:');
