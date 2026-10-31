@@ -7,6 +7,7 @@ import {
 } from './dates.js';
 import {
   DEFAULT_LEVELS, levelRules, addMinutes, addQuickTask, deleteTask, describeSchedule, getEntry,
+  activePause, clearHistoryBefore, isDayOff, isPaused, pauseTask, resumeTask, setDayOff,
   hasLevels, isRepeating, itemsForDay, moveOnceTask, nextOrder, setDone, setLevel,
   parseQuickAdd, setGoal, setMinutes, setSkipped, snapshotPlanned, startTimer, stopTimer,
   toggleSub, uid, visibleSubtasks,
@@ -57,6 +58,8 @@ function renderToday() {
   const doneCount = items.filter((i) => i.entry.done).length;
   const pct = items.length ? Math.round((doneCount / items.length) * 100) : 0;
   const isPast = key < t;
+  const dayOff = isDayOff(S(), key);
+  const offNote = S().days[key]?.dayOff?.note;
 
   return `
     <header class="day-header">
@@ -67,6 +70,12 @@ function renderToday() {
       </div>
       <button class="icon-btn" data-action="next-day" aria-label="Next day">›</button>
     </header>
+
+    ${dayOff ? `
+      <div class="day-off-banner">
+        <div><strong>Day off${offNote ? `: ${esc(offNote)}` : ''}</strong><br><span class="small">Nothing on this day counts as missed.</span></div>
+        <button class="btn small" data-action="day-off-undo">Undo</button>
+      </div>` : ''}
 
     ${items.length ? `
       <div class="progress-row">
@@ -93,6 +102,8 @@ function renderToday() {
       ${ui.doneOpen ? `<ul class="items done-list">${closed.map((i) => renderItem(i, key)).join('')}</ul>` : ''}
       ${key === t ? '<p class="hint">Finished tasks clear off at the end of the day.</p>' : ''}
     ` : ''}
+
+    ${!dayOff ? '<p class="day-off-link"><button class="link" data-action="day-off">Mark as a day off (sick, travel…)</button></p>' : ''}
   `;
 }
 
@@ -183,6 +194,7 @@ function renderDetails(task, entry, key, subs, span) {
   } else {
     actions.push('<button class="link" data-action="tomorrow">Move to next day</button>');
   }
+  if (isRepeating(task)) actions.push('<button class="link" data-action="pause">Pause task</button>');
   actions.push('<button class="link" data-action="edit">Edit task</button>');
   if (!isRepeating(task)) actions.push('<button class="link danger" data-action="delete">Delete</button>');
   parts.push(`<div class="item-actions">${actions.join('')}</div>`);
@@ -205,13 +217,24 @@ function renderTasks() {
   const upcoming = S().tasks.filter((x) => !isRepeating(x) && !x.archived && !x.completedOn)
     .sort((a, b) => (a.schedule.date || '').localeCompare(b.schedule.date || ''));
 
-  const row = (task, sub) => `
-    <li class="task-row ${ui.editor?.id === task.id ? 'selected' : ''}" data-id="${task.id}">
+  const pauseLabel = (task) => {
+    const p = activePause(task, t);
+    if (!p) return '';
+    if (p.from > t) return `Pause from ${formatDay(p.from, t)}${p.to ? ` to ${formatDay(p.to, t)}` : ''}`;
+    return p.to ? `Paused until ${formatDay(p.to, t)}` : 'Paused';
+  };
+  const row = (task, sub) => {
+    const paused = isRepeating(task) ? pauseLabel(task) : '';
+    const now = paused && isPaused(task, t);
+    return `
+    <li class="task-row ${ui.editor?.id === task.id ? 'selected' : ''} ${now ? 'is-paused' : ''}" data-id="${task.id}">
       <button class="task-open" data-action="edit">
-        <span class="title">${esc(task.title)}</span>
+        <span class="title">${esc(task.title)}${paused ? ` <span class="badge paused">${esc(paused)}</span>` : ''}</span>
         <span class="muted small">${esc(sub)}</span>
       </button>
+      ${now ? '<button class="btn small" data-action="resume">Resume</button>' : ''}
     </li>`;
+  };
 
   const extras = (task) => {
     const bits = [describeSchedule(task)];
@@ -266,6 +289,7 @@ function renderHistory() {
   ];
   if (o.goalMinutes) tiles.push(['Time logged', formatMinutes(o.minutes), `of ${formatMinutes(o.goalMinutes)} goal`]);
   if (o.skipped) tiles.push(['Skipped', `${o.skipped}`, 'on purpose']);
+  if (o.daysOff) tiles.push(['Days off', `${o.daysOff}`, 'not counted']);
 
   return `
     ${head}
@@ -309,6 +333,7 @@ function taskStatRow(t, h) {
   if (lv.length) extra.push(lv.map(([n, c]) => `${esc(n)} ${c}`).join(' · '));
   if (t.task.timeGoal) extra.push(`${formatMinutes(t.minutes)} of ${formatMinutes(t.goal)} · goal met ${t.goalMet} of ${t.timeRuns}`);
   if (t.skipped) extra.push(`${t.skipped} skipped`);
+  if (t.excused) extra.push(`${t.excused} on days off`);
   const width = t.rate == null ? 0 : Math.round(t.rate * 100);
   return `
     <li class="stat-row">
@@ -337,14 +362,14 @@ function completionChart(h) {
   const bars = data.map((d, i) => {
     const x = left + i * step + (step - bw) / 2;
     const label = weekly ? `${shortDate(d.key)}–${shortDate(d.endKey)}` : shortDate(d.key);
-    if (!d.total) return `<rect x="${x}" y="${top}" width="${bw}" height="${plotH}" class="hit" data-tip="${label}: nothing planned" />`;
+    if (!d.total) return `${d.dayOff ? `<rect x="${x}" y="${top}" width="${bw}" height="${plotH}" rx="${Math.min(4, bw / 2)}" class="track off" />` : ''}<rect x="${x}" y="${top}" width="${bw}" height="${plotH}" class="hit" data-tip="${label}: ${d.dayOff ? 'day off' : 'nothing planned'}" />`;
     const r = d.done / d.total;
     const bh = Math.max(r > 0 ? 3 : 0, plotH * r);
     const rad = Math.min(4, bw / 2);
     return `
       <rect x="${x}" y="${top}" width="${bw}" height="${plotH}" rx="${rad}" class="track" />
       ${bh ? `<path d="${roundedTopBar(x, y(0) - bh, bw, bh, rad)}" class="bar-fill" />` : ''}
-      <rect x="${left + i * step}" y="${top}" width="${step}" height="${plotH}" class="hit" data-tip="${label}: ${d.done} of ${d.total} done" />`;
+      <rect x="${left + i * step}" y="${top}" width="${step}" height="${plotH}" class="hit" data-tip="${label}: ${d.done} of ${d.total} done${d.dayOff ? ' (day off)' : ''}" />`;
   }).join('');
   const ticks = [0, Math.floor((data.length - 1) / 2), data.length - 1]
     .filter((v, i, a) => a.indexOf(v) === i)
@@ -448,6 +473,16 @@ function renderSettings() {
     </div>
 
     <div class="card">
+      <h2 class="section tight">History</h2>
+      ${st.historyStart ? `<p class="hint">History starts ${esc(formatLongDate(st.historyStart))}.</p>` : ''}
+      <p class="hint">Start fresh: forget everything before a date. Your tasks stay; only past check-offs are removed. To skip a single day instead, mark it as a day off on the Today tab.</p>
+      <div class="btn-row bottom">
+        <label class="field inline-date"><span>Clear before</span><input type="date" id="clear-before" value="${esc(today())}" max="${esc(today())}" /></label>
+        <button class="btn danger" data-action="clear-history">Clear history</button>
+      </div>
+    </div>
+
+    <div class="card">
       <h2 class="section tight">Backup</h2>
       <p class="hint">Your tasks are saved on this device. Download a backup now and then, or use it to move your data to another device until syncing is added.</p>
       <div class="btn-row">
@@ -489,6 +524,8 @@ function blankDraft() {
     timeGoal: { minutes: 60, byDay: {} },
     spanDays: 1,
     levelDays: {},
+    pauses: [],
+    newPause: { from: today(), to: '' },
   };
 }
 
@@ -521,6 +558,7 @@ function draftFromTask(task) {
     timeGoal: task.timeGoal ? structuredClone({ byDay: {}, ...task.timeGoal }) : d.timeGoal,
     spanDays: task.spanDays || 1,
     levelDays: { ...(task.levelDays || {}) },
+    pauses: structuredClone(task.pauses || []),
   };
 }
 
@@ -701,6 +739,24 @@ function renderEditor() {
           ` : ''}
         </div>
 
+        ${s.type !== 'once' ? `
+        <div class="card">
+          <h3>Pause</h3>
+          <p class="hint">While paused the task is off your list and doesn't count in history. Leave “to” empty to pause until you resume it.</p>
+          ${d.pauses.length ? `<ul class="pause-list">
+            ${d.pauses.map((p, k) => `
+              <li>
+                <span>${p.to ? `${esc(formatLongDate(p.from))} to ${esc(formatLongDate(p.to))}` : `From ${esc(formatLongDate(p.from))} until resumed`}</span>
+                <button class="icon-btn small" data-ed="remove-pause" data-index="${k}" aria-label="Remove pause">×</button>
+              </li>`).join('')}
+          </ul>` : ''}
+          <div class="pause-add">
+            <label class="field"><span>From</span><input type="date" data-bind="newPause.from" value="${esc(d.newPause.from)}" /></label>
+            <label class="field"><span>To (optional)</span><input type="date" data-bind="newPause.to" value="${esc(d.newPause.to)}" /></label>
+            <button class="btn small" data-ed="add-pause">+ Add pause</button>
+          </div>
+        </div>` : ''}
+
         <label class="field">
           <span>Notes</span>
           <textarea rows="2" data-bind="notes" placeholder="Optional">${esc(d.notes)}</textarea>
@@ -790,6 +846,7 @@ function saveEditor() {
         return step;
       }),
     spanDays: Math.min(14, Math.max(1, Number(d.spanDays) || 1)),
+    pauses: sched.type === 'once' ? undefined : d.pauses,
     levelDays: levels.length ? cleanByDay(d.levelDays, (v) => Math.min(14, Math.max(1, Number(v) || 1))) : {},
     timeGoal: d.useTime
       ? { minutes: Math.max(0, Number(d.timeGoal.minutes) || 0), byDay: cleanByDay(d.timeGoal.byDay, (v) => Math.max(0, Number(v) || 0)) }
@@ -864,6 +921,19 @@ function onClick(e) {
         renderEditor();
         break;
       }
+      case 'add-pause': {
+        const { from, to } = d.newPause;
+        if (!from) { alert('Pick a start date for the pause.'); break; }
+        if (to && to < from) { alert('The end date is before the start date.'); break; }
+        d.pauses.push({ from, ...(to ? { to } : {}) });
+        d.newPause = { from: today(), to: '' };
+        renderEditor();
+        break;
+      }
+      case 'remove-pause':
+        d.pauses.splice(Number(ed.dataset.index), 1);
+        renderEditor();
+        break;
       case 'remove-rule':
         d.levelRules.splice(Number(ed.dataset.index), 1);
         renderEditor();
@@ -951,6 +1021,30 @@ function onClick(e) {
     case 'delete':
       if (confirm(`Delete "${task.title}"?`)) { deleteTask(S(), task); store.save(); }
       break;
+    case 'pause':
+      pauseTask(task, key < today() ? today() : key);
+      ui.expanded.delete(task.id);
+      store.save();
+      toast('Paused. Resume it in Tasks.');
+      break;
+    case 'resume': resumeTask(task, today()); store.save(); toast(`${task.title} is back on your list`); break;
+    case 'day-off': {
+      const note = prompt('Day off. Add a note if you like (e.g. sick, travel):', '');
+      if (note === null) break;
+      setDayOff(S(), key, true, note.trim());
+      store.save();
+      break;
+    }
+    case 'day-off-undo': setDayOff(S(), key, false); store.save(); break;
+    case 'clear-history': {
+      const before = $('#clear-before')?.value || today();
+      if (confirm(`Clear all history before ${formatLongDate(before)}? Check-offs, times and days off before then are removed. This cannot be undone.`)) {
+        clearHistoryBefore(S(), before);
+        store.save();
+        toast('History cleared');
+      }
+      break;
+    }
     case 'edit': openEditor(task); break;
     case 'new-task': openEditor(null); break;
     case 'export': exportData(); break;
