@@ -30,4 +30,4 @@ npm test    # runs the logic tests (Node 20+)
 - `js/model.js`: tasks, schedules, levels, multi-day runs, time goals
 - `js/app.js`: the interface
 - `js/store.js`: saving to the browser
-- `sw.js`: offline support (bump `CACHE` when releasing changes)
+- `sw.js`: offline support. Online it always loads the latest files; offline it uses the saved copy. Bump `CACHE` and add new files to `ASSETS` when releasing.

@@ -1,6 +1,7 @@
-// Lets the app open offline. Serves saved files right away, then refreshes them
-// in the background so updates show up on the next launch.
-const CACHE = 'todo-v7';
+// Lets the app open offline.
+// Online: always fetch the latest files (skipping the browser's short-term cache), so
+// every file comes from the same version. Offline or very slow: use the saved copy.
+const CACHE = 'todo-v8';
 const ASSETS = [
   './',
   'index.html',
@@ -17,7 +18,11 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  e.waitUntil(
+    caches.open(CACHE)
+      .then((c) => c.addAll(ASSETS.map((url) => new Request(url, { cache: 'reload' }))))
+      .then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener('activate', (e) => {
@@ -31,16 +36,19 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
-  e.respondWith(
-    caches.open(CACHE).then(async (cache) => {
-      const cached = await cache.match(req, { ignoreSearch: true });
-      const network = fetch(req)
-        .then((res) => {
-          if (res.ok) cache.put(req, res.clone());
-          return res;
-        })
-        .catch(() => cached);
-      return cached || network;
-    }),
-  );
+  e.respondWith((async () => {
+    const cache = await caches.open(CACHE);
+    const network = fetch(req, { cache: 'no-cache' }).then((res) => {
+      if (res.ok) cache.put(req, res.clone());
+      return res;
+    });
+    // Give the network a few seconds before falling back to the saved copy.
+    const timeout = new Promise((resolve) => setTimeout(resolve, 3000));
+    try {
+      const res = await Promise.race([network, timeout]);
+      if (res) return res;
+    } catch { /* offline */ }
+    const cached = await cache.match(req, { ignoreSearch: true });
+    return cached || network;
+  })());
 });
