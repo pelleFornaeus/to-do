@@ -1,6 +1,6 @@
 // Lets the app open offline. Serves saved files right away, then refreshes them
 // in the background so updates show up on the next launch.
-const CACHE = 'todo-v5';
+const CACHE = 'todo-v6';
 const ASSETS = [
   './',
   'index.html',

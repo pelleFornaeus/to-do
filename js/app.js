@@ -278,12 +278,17 @@ function renderSettings() {
 
 // ---------- Task editor ----------
 
+function ordinal(n) {
+  const s = n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th');
+  return `${n}${s}`;
+}
+
 function blankDraft() {
   return {
     id: null,
     title: '',
     notes: '',
-    schedule: { type: 'daily', days: [], every: 2, day: 1, date: today() },
+    schedule: { type: 'daily', days: [], every: 2, day: 1, by: 'day', nth: '1', weekday: 6, date: today() },
     startDate: today(),
     levels: [],
     levelDefault: 0,
@@ -404,7 +409,28 @@ function renderEditor() {
           ${s.type === 'interval' ? `
             <label class="field"><span>Every how many days</span><input type="number" min="1" inputmode="numeric" data-bind="schedule.every" data-num value="${esc(s.every)}" /></label>` : ''}
           ${s.type === 'monthly' ? `
-            <label class="field"><span>Day of the month</span><input type="number" min="1" max="31" inputmode="numeric" data-bind="schedule.day" data-num value="${esc(s.day)}" /></label>` : ''}
+            <div class="rule-line">
+              <select data-bind="schedule.by" data-rerender aria-label="Monthly by">
+                <option value="day" ${s.by !== 'weekday' ? 'selected' : ''}>On a date</option>
+                <option value="weekday" ${s.by === 'weekday' ? 'selected' : ''}>On a weekday</option>
+              </select>
+              ${s.by === 'weekday' ? `
+                <select data-bind="schedule.nth" aria-label="Which week">
+                  ${[['1', 'first'], ['2', 'second'], ['3', 'third'], ['4', 'fourth'], ['last', 'last']].map(([v, l]) => `<option value="${v}" ${String(s.nth) === v ? 'selected' : ''}>${l}</option>`).join('')}
+                </select>
+                <select data-bind="schedule.weekday" data-num aria-label="Weekday">
+                  ${WEEKDAYS.map((w, j) => `<option value="${j}" ${Number(s.weekday) === j ? 'selected' : ''}>${w}</option>`).join('')}
+                </select>
+                <span class="muted small">of the month</span>
+              ` : `
+                <select data-bind="schedule.day" aria-label="Day of the month">
+                  ${Array.from({ length: 31 }, (_, i) => i + 1).map((n) => `<option value="${n}" ${String(s.day) === String(n) ? 'selected' : ''}>${ordinal(n)}</option>`).join('')}
+                  <option value="last" ${s.day === 'last' ? 'selected' : ''}>last day</option>
+                </select>
+                <span class="muted small">of the month</span>
+              `}
+            </div>
+            ${s.by !== 'weekday' && Number(s.day) > 28 ? '<p class="hint">In shorter months this happens on the last day.</p>' : ''}` : ''}
           ${s.type !== 'once' ? `
             <label class="field"><span>Starting</span><input type="date" data-bind="startDate" value="${esc(d.startDate)}" /></label>` : ''}
           <label class="field inline"><span class="wide-label">Takes</span>
@@ -534,7 +560,15 @@ function saveEditor() {
   if (sched.type === 'once') sched.date = d.schedule.date || today();
   if (sched.type === 'weekly') sched.days = [...d.schedule.days].sort();
   if (sched.type === 'interval') sched.every = Math.max(1, Number(d.schedule.every) || 1);
-  if (sched.type === 'monthly') sched.day = Math.min(31, Math.max(1, Number(d.schedule.day) || 1));
+  if (sched.type === 'monthly') {
+    if (d.schedule.by === 'weekday') {
+      sched.by = 'weekday';
+      sched.nth = d.schedule.nth === 'last' ? 'last' : Number(d.schedule.nth) || 1;
+      sched.weekday = Number(d.schedule.weekday) || 0;
+    } else {
+      sched.day = d.schedule.day === 'last' ? 'last' : Math.min(31, Math.max(1, Number(d.schedule.day) || 1));
+    }
+  }
 
   const levels = d.levels.map((n, i) => n.trim() || `Level ${i + 1}`);
   const clampLevel = (v) => Math.min(Math.max(0, Number(v) || 0), Math.max(0, levels.length - 1));

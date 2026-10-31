@@ -310,3 +310,4 @@ h3 { margin: 0 0 8px; font-size: 15px; }
 /* Level dropdown next to each step */
 .hint.flush { margin: 0; }
 .ed-subs select.step-level { width: 46%; max-width: 220px; flex: none; font-size: 15px; padding: 10px 6px; }
+.rule-line select { width: auto; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); font-size: 16px; }
