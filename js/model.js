@@ -7,7 +7,8 @@
 // Task = {
 //   id, title, notes, order, createdAt, updatedAt, archived,
 //   schedule: { type: 'once', date } | { type: 'daily' } | { type: 'weekly', days: [0..6] }
-//           | { type: 'interval', every } | { type: 'monthly', day },
+//           | { type: 'interval', every } | { type: 'monthly', day: 1..31 | 'last' }
+//           | { type: 'monthly', by: 'weekday', nth: 1..4 | 'last', weekday },
 //   startDate,                       // first day a repeating task applies
 //   completedOn,                     // one-time tasks: day it was finished
 //   levels: ['Light', ...],          // optional; empty means no levels
@@ -55,9 +56,12 @@ export function isScheduledOn(task, key) {
       return d >= 0 && d % Math.max(1, s.every || 1) === 0;
     }
     case 'monthly': {
+      // By weekday, e.g. first or last Saturday of the month.
+      if (s.by === 'weekday') return ruleMatches({ weekday: s.weekday ?? 6, nth: s.nth ?? 1 }, key);
       const [y, m, dd] = key.split('-').map(Number);
       const lastDay = new Date(y, m, 0).getDate();
-      return dd === Math.min(s.day || 1, lastDay);
+      if (s.day === 'last') return dd === lastDay;
+      return dd === Math.min(Number(s.day) || 1, lastDay);
     }
     default:
       return false;
@@ -78,7 +82,15 @@ export function describeSchedule(task) {
       return days.map((d) => names[d]).join(', ') || 'No days picked';
     }
     case 'interval': return s.every === 1 ? 'Every day' : `Every ${s.every} days`;
-    case 'monthly': return `Monthly on day ${s.day}`;
+    case 'monthly': {
+      if (s.by === 'weekday') {
+        const nth = { 1: 'first', 2: 'second', 3: 'third', 4: 'fourth', last: 'last' }[s.nth ?? 1];
+        const long = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        return `Monthly on the ${nth} ${long[s.weekday ?? 6]}`;
+      }
+      if (s.day === 'last') return 'Monthly on the last day';
+      return `Monthly on day ${s.day}`;
+    }
     default: return '';
   }
 }

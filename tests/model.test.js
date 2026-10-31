@@ -222,3 +222,22 @@ test('steps on "default" follow the usual level', () => {
   assert.equal(ids(1), 'a');
   assert.equal(ids(2), 'a,b,c');
 });
+
+test('monthly: first day, last day, and first/last weekday of the month', async () => {
+  const { describeSchedule } = await import('../js/model.js');
+  const first = task({ schedule: { type: 'monthly', day: 1 } });
+  assert.equal(isScheduledOn(first, '2026-11-01'), true);
+  assert.equal(isScheduledOn(first, '2026-11-02'), false);
+  const last = task({ schedule: { type: 'monthly', day: 'last' } });
+  assert.equal(isScheduledOn(last, '2026-11-30'), true);
+  assert.equal(isScheduledOn(last, '2027-02-28'), true);
+  assert.equal(isScheduledOn(last, '2026-11-29'), false);
+  const firstSat = task({ schedule: { type: 'monthly', by: 'weekday', nth: 1, weekday: 6 } });
+  assert.equal(isScheduledOn(firstSat, '2026-11-07'), true);
+  assert.equal(isScheduledOn(firstSat, '2026-11-14'), false);
+  const lastSat = task({ schedule: { type: 'monthly', by: 'weekday', nth: 'last', weekday: 6 } });
+  assert.equal(isScheduledOn(lastSat, '2026-11-28'), true);
+  assert.equal(isScheduledOn(lastSat, '2026-11-21'), false);
+  assert.equal(describeSchedule(lastSat), 'Monthly on the last Saturday');
+  assert.equal(describeSchedule(last), 'Monthly on the last day');
+});
