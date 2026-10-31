@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>To-Do</title>
+  <meta name="description" content="Daily to-do list with repeating tasks, steps, levels and time goals." />
+  <meta name="theme-color" content="#f6f5f2" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#141416" media="(prefers-color-scheme: dark)" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="To-Do" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <main id="main" class="main"></main>
+  <div id="editor" class="overlay" hidden></div>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <nav class="tabbar" aria-label="Sections">
+    <button data-tab="today" class="active">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="3"/><path d="M8 3v4M16 3v4M4 10h16"/></svg>
+      <span>Today</span>
+    </button>
+    <button data-tab="tasks">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/></svg>
+      <span>Tasks</span>
+    </button>
+    <button data-tab="settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
+      <span>Settings</span>
+    </button>
+  </nav>
+  <noscript>This app needs JavaScript turned on.</noscript>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
