@@ -19,7 +19,14 @@ Open the app's web address in Safari, tap **Share**, then **Add to Home Screen**
 
 ## Your data
 
-Data is saved on each device. Use **Settings → Download backup** to keep a copy. Syncing between phone and computer is the next step.
+Data is saved on each device and works offline. To keep your phone and computer in step, sign in under **Settings → Sync** with the same account on both. Changes made offline sync when you're back online. **Settings → Download backup** keeps a copy as a file.
+
+### Sync setup (one time)
+
+Sync uses a free [Supabase](https://supabase.com) project. The project address and its public key are in `js/config.js`.
+
+1. In Supabase, open **SQL Editor**, paste in [`supabase/setup.sql`](supabase/setup.sql) and press **Run**. This creates the table, and each account can only see its own rows.
+2. Open **Authentication → URL Configuration** and set **Site URL** to `https://pellefornaeus.github.io/to-do/`. That's where the "confirm your email" link takes you.
 
 ## For developers
 
@@ -33,4 +40,5 @@ npm test    # runs the logic tests (Node 20+)
 - `js/model.js`: tasks, schedules, levels, multi-day runs, time goals
 - `js/app.js`: the interface
 - `js/store.js`: saving to the browser
+- `js/records.js`, `js/sync.js`: syncing through Supabase. Data is split into small records (a task, a day, one task's progress on a day). The newest change to each record wins, so two devices can check off different things at the same time.
 - `sw.js`: offline support. Online it always loads the latest files; offline it uses the saved copy. Bump `CACHE` and add new files to `ASSETS` when releasing.
