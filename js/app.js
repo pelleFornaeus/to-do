@@ -8,7 +8,8 @@ import {
 } from './dates.js';
 import {
   DEFAULT_LEVELS, levelRules, addMinutes, addQuickTask, deleteTask, describeSchedule, getEntry,
-  activePause, clearHistoryBefore, isDayOff, isPaused, pauseTask, resumeTask, setDayOff,
+  activePause, addWheneverDate, clearHistoryBefore, isWhenever, nextWheneverDate,
+  removeWheneverDate, upcomingItems, isDayOff, isPaused, pauseTask, resumeTask, setDayOff,
   hasLevels, isRepeating, itemsForDay, moveOnceTask, nextOrder, setDone, setLevel,
   parseQuickAdd, setGoal, setMinutes, setSkipped, snapshotPlanned, startTimer, stopTimer,
   toggleSub, uid, visibleSubtasks,
@@ -24,6 +25,7 @@ const ui = {
   viewKey: null, // day shown on the Today tab
   expanded: new Set(),
   doneOpen: false,
+  upcomingOpen: true,
   editor: null, // draft task being edited
   histRange: '30',
 };
@@ -123,16 +125,31 @@ function renderToday() {
       ${key === t ? '<p class="hint">Finished tasks clear off at the end of the day.</p>' : ''}
     ` : ''}
 
+    ${key === t ? renderUpcoming(t) : ''}
+
     ${!dayOff ? '<p class="day-off-link"><button class="link" data-action="day-off">Mark as a day off (sick, travel…)</button></p>' : ''}
   `;
 }
 
-function renderItem({ task, entry, carried, ref, dayNum, span }, key) {
+function renderUpcoming(t) {
+  const items = upcomingItems(S(), t, 7);
+  if (!items.length) return '';
+  return `
+    <button class="section-toggle" data-action="toggle-upcoming">
+      ${ui.upcomingOpen ? '▾' : '▸'} Coming up (${items.length})
+    </button>
+    ${ui.upcomingOpen ? `
+      <ul class="items upcoming-list">${items.map((i) => renderItem(i, t)).join('')}</ul>
+      <p class="hint">Check something off early and it counts for the day it's due.</p>` : ''}`;
+}
+
+function renderItem({ task, entry, carried, ref, dayNum, span, due }, key) {
   const expanded = ui.expanded.has(task.id);
   const subs = visibleSubtasks(task, entry);
   const subsDone = subs.filter((s) => entry.subs[s.id]).length;
   const badges = [];
-  if (span > 1 && !carried) badges.push(`<span class="badge multi">Day ${dayNum} of ${span}</span>`);
+  if (due) badges.push(`<span class="badge due">${entry.done ? 'Done early' : `Due ${esc(formatDay(due, key).replace(/,.*/, ''))}`}</span>`);
+  if (span > 1 && !carried && !due) badges.push(`<span class="badge multi">Day ${dayNum} of ${span}</span>`);
   if (carried) badges.push('<span class="badge warn">Carried over</span>');
   if (hasLevels(task)) badges.push(`<span class="badge">${esc(task.levels[entry.level ?? 0])}</span>`);
   if (subs.length) badges.push(`<span class="badge">${subsDone}/${subs.length} steps</span>`);
@@ -207,14 +224,16 @@ function renderDetails(task, entry, key, subs, span) {
   if (task.notes) parts.push(`<p class="notes">${esc(task.notes)}</p>`);
 
   const actions = [];
-  if (isRepeating(task)) {
+  if (isWhenever(task)) {
+    actions.push('<button class="link" data-action="remove-date">Remove from this day</button>');
+  } else if (isRepeating(task)) {
     actions.push(entry.skipped
       ? '<button class="link" data-action="unskip">Undo skip</button>'
       : `<button class="link" data-action="skip">${span > 1 ? 'Skip this time' : 'Skip this day'}</button>`);
   } else {
     actions.push('<button class="link" data-action="tomorrow">Move to next day</button>');
   }
-  if (isRepeating(task)) actions.push('<button class="link" data-action="pause">Pause task</button>');
+  if (isRepeating(task) && !isWhenever(task)) actions.push('<button class="link" data-action="pause">Pause task</button>');
   actions.push('<button class="link" data-action="edit">Edit task</button>');
   if (!isRepeating(task)) actions.push('<button class="link danger" data-action="delete">Delete</button>');
   parts.push(`<div class="item-actions">${actions.join('')}</div>`);
@@ -232,7 +251,10 @@ function timerText(start) {
 
 function renderTasks() {
   const t = today();
-  const repeating = S().tasks.filter((x) => isRepeating(x) && !x.archived)
+  const whenever = S().tasks.filter((x) => isWhenever(x) && !x.archived)
+    .sort((a, b) => a.title.localeCompare(b.title));
+  const onToday = new Set(itemsForDay(S(), t, t).map((i) => i.task.id));
+  const repeating = S().tasks.filter((x) => isRepeating(x) && !isWhenever(x) && !x.archived)
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const upcoming = S().tasks.filter((x) => !isRepeating(x) && !x.archived && !x.completedOn)
     .sort((a, b) => (a.schedule.date || '').localeCompare(b.schedule.date || ''));
@@ -253,7 +275,17 @@ function renderTasks() {
         <span class="muted small">${esc(sub)}</span>
       </button>
       ${now ? '<button class="btn small" data-action="resume">Resume</button>' : ''}
+      ${isWhenever(task) ? (onToday.has(task.id)
+        ? '<span class="muted small row-note">On today</span>'
+        : '<button class="btn small" data-action="use-today">Add to today</button>') : ''}
     </li>`;
+  };
+  const wheneverSub = (task) => {
+    const bits = [];
+    if (task.subtasks?.length) bits.push(`${task.subtasks.length} steps`);
+    const next = nextWheneverDate(task, t);
+    if (next && next !== t) bits.push(`next: ${formatDay(next, t)}`);
+    return bits.join(' · ') || 'Add it to a day when you need it';
   };
 
   const extras = (task) => {
@@ -275,6 +307,11 @@ function renderTasks() {
     ${repeating.length
       ? `<ul class="task-list">${repeating.map((x) => row(x, extras(x))).join('')}</ul>`
       : '<p class="empty">No repeating tasks yet. Try "Clean the kitchen" every day or "Gym" on Sun, Tue and Thu.</p>'}
+
+    <h2 class="section">Whenever</h2>
+    ${whenever.length
+      ? `<ul class="task-list">${whenever.map((x) => row(x, wheneverSub(x))).join('')}</ul>`
+      : '<p class="empty">Checklists you use now and then, like packing a suitcase. Make one with + New task and pick “Whenever I need it”.</p>'}
 
     <h2 class="section">One-time</h2>
     ${upcoming.length
@@ -608,7 +645,8 @@ function blankDraft() {
     id: null,
     title: '',
     notes: '',
-    schedule: { type: 'daily', days: [], every: 2, day: 1, by: 'day', nth: '1', weekday: 6, date: today() },
+    schedule: { type: 'daily', days: [], every: 2, day: 1, by: 'day', nth: '1', weekday: 6, date: today(), dates: [] },
+    newDate: today(),
     startDate: today(),
     levels: [],
     levelDefault: 0,
@@ -721,6 +759,7 @@ function renderEditor() {
               <option value="weekly" ${s.type === 'weekly' ? 'selected' : ''}>On certain weekdays</option>
               <option value="interval" ${s.type === 'interval' ? 'selected' : ''}>Every few days</option>
               <option value="monthly" ${s.type === 'monthly' ? 'selected' : ''}>Once a month</option>
+              <option value="whenever" ${s.type === 'whenever' ? 'selected' : ''}>Whenever I need it (like a packing list)</option>
             </select>
           </label>
           ${s.type === 'once' ? `
@@ -754,7 +793,18 @@ function renderEditor() {
               `}
             </div>
             ${s.by !== 'weekday' && Number(s.day) > 28 ? '<p class="hint">In shorter months this happens on the last day.</p>' : ''}` : ''}
-          ${s.type !== 'once' ? `
+          ${s.type === 'whenever' ? `
+            <p class="hint">It's saved under Tasks. Tap “Add to today” when you need it, or plan days here. Each time starts with every step unchecked.</p>
+            ${s.dates.length ? `<ul class="pause-list">
+              ${s.dates.map((k, i) => `
+                <li><span>${esc(formatLongDate(k))}</span>
+                <button class="icon-btn small" data-ed="remove-date" data-index="${i}" aria-label="Remove day">×</button></li>`).join('')}
+            </ul>` : ''}
+            <div class="pause-add">
+              <label class="field"><span>Plan it for</span><input type="date" data-bind="newDate" value="${esc(d.newDate)}" /></label>
+              <button class="btn small" data-ed="add-date">+ Add day</button>
+            </div>` : ''}
+          ${s.type !== 'once' && s.type !== 'whenever' ? `
             <label class="field"><span>Starting</span><input type="date" data-bind="startDate" value="${esc(d.startDate)}" /></label>` : ''}
           <label class="field inline"><span class="wide-label">Takes</span>
             <span class="days-input"><input type="number" min="1" max="14" inputmode="numeric" data-bind="spanDays" data-num value="${esc(d.spanDays)}" /> day(s)</span>
@@ -777,7 +827,7 @@ function renderEditor() {
           ${d.levels.length ? `
             <p class="hint">The small box is how many days a level takes, e.g. 3 for a complete clean. Leave it empty for the usual.</p>
             <label class="field"><span>Usual level</span><select data-bind="levelDefault" data-num data-rerender>${levelOptions(d.levelDefault)}</select></label>
-            ${s.type !== 'once' ? `
+            ${s.type !== 'once' && s.type !== 'whenever' ? `
               <div class="rules">
                 <span class="field-label">Different level on some days</span>
                 ${d.levelRules.map((r, k) => `
@@ -833,7 +883,7 @@ function renderEditor() {
           ` : ''}
         </div>
 
-        ${s.type !== 'once' ? `
+        ${s.type !== 'once' && s.type !== 'whenever' ? `
         <div class="card">
           <h3>Pause</h3>
           <p class="hint">While paused the task is off your list and doesn't count in history. Leave “to” empty to pause until you resume it.</p>
@@ -900,6 +950,7 @@ function saveEditor() {
   const sched = { type: d.schedule.type };
   if (sched.type === 'once') sched.date = d.schedule.date || today();
   if (sched.type === 'weekly') sched.days = [...d.schedule.days].sort();
+  if (sched.type === 'whenever') sched.dates = [...new Set(d.schedule.dates || [])].sort();
   if (sched.type === 'interval') sched.every = Math.max(1, Number(d.schedule.every) || 1);
   if (sched.type === 'monthly') {
     if (d.schedule.by === 'weekday') {
@@ -940,7 +991,7 @@ function saveEditor() {
         return step;
       }),
     spanDays: Math.min(14, Math.max(1, Number(d.spanDays) || 1)),
-    pauses: sched.type === 'once' ? undefined : d.pauses,
+    pauses: sched.type === 'once' || sched.type === 'whenever' ? undefined : d.pauses,
     levelDays: levels.length ? cleanByDay(d.levelDays, (v) => Math.min(14, Math.max(1, Number(v) || 1))) : {},
     timeGoal: d.useTime
       ? { minutes: Math.max(0, Number(d.timeGoal.minutes) || 0), byDay: cleanByDay(d.timeGoal.byDay, (v) => Math.max(0, Number(v) || 0)) }
@@ -1024,6 +1075,14 @@ function onClick(e) {
         renderEditor();
         break;
       }
+      case 'add-date':
+        if (d.newDate) d.schedule.dates = [...new Set([...d.schedule.dates, d.newDate])].sort();
+        renderEditor();
+        break;
+      case 'remove-date':
+        d.schedule.dates.splice(Number(ed.dataset.index), 1);
+        renderEditor();
+        break;
       case 'remove-pause':
         d.pauses.splice(Number(ed.dataset.index), 1);
         renderEditor();
@@ -1080,6 +1139,17 @@ function onClick(e) {
     case 'next-day': ui.viewKey = addDays(key, 1); ui.expanded.clear(); render(); break;
     case 'go-today': ui.viewKey = today(); render(); break;
     case 'toggle-done': ui.doneOpen = !ui.doneOpen; render(); break;
+    case 'toggle-upcoming': ui.upcomingOpen = !ui.upcomingOpen; render(); break;
+    case 'use-today':
+      addWheneverDate(task, today());
+      store.save();
+      toast(`${task.title} added to today`);
+      break;
+    case 'remove-date':
+      removeWheneverDate(task, ref.start);
+      ui.expanded.delete(task.id);
+      store.save();
+      break;
     case 'expand':
       ui.expanded.has(task.id) ? ui.expanded.delete(task.id) : ui.expanded.add(task.id);
       render();

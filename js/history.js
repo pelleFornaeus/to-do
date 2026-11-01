@@ -22,7 +22,10 @@ export function firstRecordedDay(state, todayKey) {
 // A day counts an item as done when it was finished that day.
 function doneThatDay(item, key) {
   const e = item.entry;
-  return e.done && (e.doneOn ? e.doneOn === key : item.ref.start === key);
+  if (!e.done) return false;
+  if (!e.doneOn) return item.ref.start === key;
+  // Done ahead of time counts on the day it was due.
+  return e.doneOn === key || (e.doneOn < item.ref.start && key === item.ref.start);
 }
 
 export function computeHistory(state, fromKey, toKey, todayKey) {
