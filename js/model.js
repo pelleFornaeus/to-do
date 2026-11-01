@@ -111,6 +111,8 @@ export function isScheduledOn(task, key) {
       const d = diffDays(task.startDate || key, key);
       return d >= 0 && d % Math.max(1, s.every || 1) === 0;
     }
+    case 'whenever':
+      return (s.dates || []).includes(key);
     case 'monthly': {
       // By weekday, e.g. first or last Saturday of the month.
       if (s.by === 'weekday') return ruleMatches({ weekday: s.weekday ?? 6, nth: s.nth ?? 1 }, key);
@@ -138,6 +140,7 @@ export function describeSchedule(task) {
       return days.map((d) => names[d]).join(', ') || 'No days picked';
     }
     case 'interval': return s.every === 1 ? 'Every day' : `Every ${s.every} days`;
+    case 'whenever': return 'Whenever you need it';
     case 'monthly': {
       if (s.by === 'weekday') {
         const nth = { 1: 'first', 2: 'second', 3: 'third', 4: 'fourth', last: 'last' }[s.nth ?? 1];
@@ -300,6 +303,58 @@ function repeatingRunOn(state, task, key) {
   return null;
 }
 
+// ---------- Whenever tasks ----------
+// A saved task (like a packing list) with no schedule. Add it to a day when you need it;
+// each time starts with a fresh checklist.
+
+export function isWhenever(task) {
+  return task.schedule?.type === 'whenever';
+}
+
+export function addWheneverDate(task, key) {
+  const dates = new Set(task.schedule.dates || []);
+  dates.add(key);
+  task.schedule.dates = [...dates].sort();
+  task.updatedAt = Date.now();
+}
+
+export function removeWheneverDate(task, key) {
+  task.schedule.dates = (task.schedule.dates || []).filter((d) => d !== key);
+  task.updatedAt = Date.now();
+}
+
+export function nextWheneverDate(task, todayKey) {
+  return (task.schedule.dates || []).find((d) => d >= todayKey) || null;
+}
+
+// ---------- Coming up ----------
+// The next time each task is due in the coming days, so it can be done early.
+// Tasks already on today's list are left out.
+
+export function upcomingItems(state, todayKey, days = 7) {
+  const onToday = new Set(itemsForDay(state, todayKey, todayKey).map((i) => i.task.id));
+  const last = addDays(todayKey, days);
+  const out = [];
+  for (const task of state.tasks) {
+    if (task.archived || onToday.has(task.id)) continue;
+    const s = task.schedule || { type: 'once' };
+    let due = null;
+    if (s.type === 'once') {
+      if (s.date > todayKey && s.date <= last) due = s.date;
+    } else {
+      for (let k = addDays(todayKey, 1); k <= last; k = addDays(k, 1)) {
+        if (isScheduledOn(task, k)) { due = k; break; }
+      }
+    }
+    if (!due) continue;
+    const entry = getEntry(state, due, task);
+    if (entry.skipped || (entry.done && entry.doneOn && entry.doneOn < todayKey)) continue;
+    out.push({ task, entry, ref: { start: due, on: todayKey }, dayNum: 1, span: spanFor(task, entry.level), carried: false, due });
+  }
+  out.sort((a, b) => a.due.localeCompare(b.due) || (a.task.order ?? 0) - (b.task.order ?? 0));
+  return out;
+}
+
 // Which tasks show on a given day, in display order.
 // Each item: { task, entry, ref: { start, on }, dayNum, span, carried }
 export function itemsForDay(state, key, todayKey) {
@@ -310,7 +365,8 @@ export function itemsForDay(state, key, todayKey) {
     if (s.type === 'once') {
       if (task.archived || !s.date || s.date > key) continue;
       const entry = getEntry(state, s.date, task);
-      if (finishedBefore(entry, key)) continue;
+      // Done early: still shows (as done) on the day it was due.
+      if (finishedBefore(entry, key) && !(key === s.date && entry.doneOn < s.date)) continue;
       const span = spanFor(task, entry.level);
       const dayNum = diffDays(s.date, key) + 1;
       const doneToday = entry.done && entry.doneOn === key;

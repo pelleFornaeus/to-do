@@ -9,6 +9,8 @@ A daily to-do list that runs entirely in your browser. No AI, no server, no acco
 - **Multi-day tasks.** A task or a level can take several days (e.g. a 3-day complete clean). It shows "Day 2 of 3" and keeps checked steps.
 - **Time goals.** e.g. "Study language" for 1 hour, with different goals on some days. Log time with quick buttons or a timer.
 - **History.** A History tab shows completion rates, per-task results (e.g. gym about 2.5× a week), levels done and time logged, with charts for 7 days to all time. "Copy summary for Claude" copies a text report to paste into Claude for a written review.
+- **Do it early.** "Coming up" on the Today tab shows what's due in the next week. Check something off early (gym on Friday instead of Sunday) and it counts for the day it was due.
+- **Whenever tasks.** Saved checklists with no schedule, like packing a suitcase. Tap "Add to today" (or plan days) when you need one; each time starts unchecked.
 - **Days off.** Mark any day (a sick day, a travel day) as a day off from the Today tab. Nothing on it counts as missed.
 - **Pause a task.** Pause the kitchen while you travel and keep the gym going. Pause from the task's details on Today, or set dates in the task editor. Paused days don't count.
 - **Clear history.** Settings > History starts your history fresh from a chosen date.
