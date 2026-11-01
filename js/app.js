@@ -1,4 +1,5 @@
 import { store } from './store.js';
+import { sync } from './sync.js';
 import {
   computeHistory, perWeek, rangeStart, reportText, shortDate, weeklyBuckets,
 } from './history.js';
@@ -33,7 +34,26 @@ const findTask = (id) => S().tasks.find((t) => t.id === id);
 
 // ---------- Rendering ----------
 
-function render() {
+// Redraws keep whatever is being typed (a sync can redraw at any moment).
+function keepTyping(fn) {
+  const a = document.activeElement;
+  const sel = a?.id ? `#${a.id}` : a?.dataset?.bind ? `[data-bind="${a.dataset.bind}"]` : null;
+  const quick = $('#quick-input')?.value;
+  const pos = sel && typeof a.selectionStart === 'number' ? [a.selectionStart, a.selectionEnd] : null;
+  fn();
+  if (quick) { const q = $('#quick-input'); if (q && !q.value) q.value = quick; }
+  if (sel) {
+    const el = $(sel);
+    if (el && el !== document.activeElement) {
+      el.focus({ preventScroll: true });
+      if (pos) try { el.setSelectionRange(...pos); } catch { /* not a text field */ }
+    }
+  }
+}
+
+function render() { keepTyping(renderAll); }
+
+function renderAll() {
   const t = today();
   if (!ui.viewKey) ui.viewKey = t;
   if (snapshotPlanned(S(), t, t)) store.save();
@@ -451,12 +471,86 @@ document.addEventListener('pointerdown', (e) => {
 });
 window.addEventListener('scroll', () => { $('#tip').hidden = true; }, { passive: true });
 
+function syncStatusText() {
+  const st = sync.status;
+  const pending = sync.pending();
+  const time = st.lastSync ? new Date(st.lastSync).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+  switch (st.state) {
+    case 'syncing': return 'Syncing…';
+    case 'ok': return `Up to date${time ? ` · synced ${time}` : ''}`;
+    case 'offline': return `Offline. ${pending ? `${pending} change${pending === 1 ? '' : 's'} will sync` : 'Changes will sync'} when you're back online.`;
+    case 'error': return `Couldn't sync: ${st.error}`;
+    default: return 'Waiting to sync…';
+  }
+}
+
+function renderSyncCard() {
+  const user = sync.user;
+  if (user) {
+    return `
+    <div class="card">
+      <h2 class="section tight">Sync</h2>
+      <p class="flush-p">Signed in as <strong>${esc(user.email)}</strong></p>
+      <p class="hint sync-status ${sync.status.state}" id="sync-status">${esc(syncStatusText())}</p>
+      <div class="btn-row">
+        <button class="btn" data-action="sync-now">Sync now</button>
+        <button class="btn" data-action="sign-out">Sign out</button>
+      </div>
+    </div>`;
+  }
+  return `
+    <div class="card">
+      <h2 class="section tight">Sync</h2>
+      <p class="hint">Sign in with the same account on your phone and computer to keep them in step. Everything still works offline and catches up later.</p>
+      ${sync.status.error ? `<p class="form-msg error">${esc(sync.status.error)}</p>` : ''}
+      <form class="sign-in" data-form="sign-in">
+        <label class="field"><span>Email</span><input id="sync-email" type="email" autocomplete="username" required value="${esc(ui.syncEmail || '')}" /></label>
+        <label class="field"><span>Password</span><input id="sync-password" type="password" autocomplete="current-password" minlength="6" required /></label>
+        <p class="form-msg" id="sync-msg" hidden></p>
+        <div class="btn-row">
+          <button class="btn primary" type="submit">Sign in</button>
+          <button class="btn" type="button" data-action="sign-up">Create account</button>
+        </div>
+      </form>
+    </div>`;
+}
+
+async function syncAuth(kind) {
+  const email = $('#sync-email')?.value.trim();
+  const password = $('#sync-password')?.value || '';
+  const msg = $('#sync-msg');
+  const say = (text, isError) => { if (msg) { msg.textContent = text; msg.hidden = false; msg.classList.toggle('error', !!isError); } };
+  if (!email || password.length < 6) { say('Enter your email and a password of at least 6 characters.', true); return; }
+  ui.syncEmail = email;
+  document.querySelectorAll('.sign-in button').forEach((b) => { b.disabled = true; });
+  say(kind === 'up' ? 'Creating your account…' : 'Signing in…');
+  try {
+    if (kind === 'up') {
+      const { confirm: needsConfirm } = await sync.signUp(email, password);
+      if (needsConfirm) {
+        say('Almost done: open the email from Supabase and tap the link, then come back and sign in here.');
+        document.querySelectorAll('.sign-in button').forEach((b) => { b.disabled = false; });
+        return;
+      }
+    } else {
+      await sync.signIn(email, password);
+    }
+    render();
+    toast('Signed in. Syncing is on.');
+  } catch (e) {
+    say(e instanceof TypeError ? 'No connection. Try again when you’re online.' : e.message, true);
+    document.querySelectorAll('.sign-in button').forEach((b) => { b.disabled = false; });
+  }
+}
+
 function renderSettings() {
   const st = S().settings;
   const hours = [0, 1, 2, 3, 4, 5, 6];
   const fmtHour = (h) => (h === 0 ? 'Midnight' : `${h}:00 am`);
   return `
     <header class="page-header"><h1>Settings</h1></header>
+
+    ${renderSyncCard()}
 
     <div class="card">
       <label class="field">
@@ -484,7 +578,7 @@ function renderSettings() {
 
     <div class="card">
       <h2 class="section tight">Backup</h2>
-      <p class="hint">Your tasks are saved on this device. Download a backup now and then, or use it to move your data to another device until syncing is added.</p>
+      <p class="hint">A backup file of everything, just in case. You can also use it to move your data without syncing.</p>
       <div class="btn-row">
         <button class="btn" data-action="export">Download backup</button>
         <label class="btn">Restore backup<input type="file" accept="application/json,.json" data-action="import" hidden /></label>
@@ -1050,8 +1144,17 @@ function onClick(e) {
     case 'export': exportData(); break;
     case 'hist-range': ui.histRange = btn.dataset.range; render(); break;
     case 'copy-report': copyReport(); break;
+    case 'sign-up': syncAuth('up'); break;
+    case 'sync-now': sync.syncNow(); break;
+    case 'sign-out':
+      if (confirm('Sign out? Your data stays on this device, but it stops syncing.')) {
+        sync.signOut().then(render);
+      }
+      break;
     case 'erase':
-      if (confirm('Erase all tasks and history on this device? This cannot be undone.')) {
+      if (confirm(sync.user
+        ? 'Erase all tasks and history? Because syncing is on, this erases them on all your devices. This cannot be undone.'
+        : 'Erase all tasks and history on this device? This cannot be undone.')) {
         store.replace({});
       }
       break;
@@ -1059,12 +1162,14 @@ function onClick(e) {
 }
 
 function onSubmit(e) {
+  if (e.target.closest('[data-form="sign-in"]')) { e.preventDefault(); syncAuth('in'); return; }
   const form = e.target.closest('[data-form="quick-add"]');
   if (!form) return;
   e.preventDefault();
   const input = $('#quick-input');
   const { title, key } = parseQuickAdd(input.value, ui.viewKey);
   if (!title) return;
+  input.value = '';
   addQuickTask(S(), title, key);
   store.save();
   if (key !== ui.viewKey) toast(`Added to ${formatDay(key, today()).toLowerCase()}'s list`);
@@ -1156,6 +1261,17 @@ setInterval(tick, 1000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
 
 render();
+
+// Sync: redraw when changes arrive from another device, and keep the status line current.
+sync.init(store, () => store.save());
+let lastSyncState = sync.status.state;
+sync.onStatus((st) => {
+  const el = $('#sync-status');
+  if (el) { el.textContent = syncStatusText(); el.className = `hint sync-status ${st.state}`; }
+  const signedOut = st.state === 'off' && lastSyncState !== 'off';
+  lastSyncState = st.state;
+  if (signedOut && ui.tab === 'settings') render();
+});
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   // When an update installs, reload once so every file comes from the new version.
