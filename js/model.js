@@ -72,6 +72,40 @@ export function resumeTask(task, key) {
   task.updatedAt = Date.now();
 }
 
+// ---------- Travel mode ----------
+// Pause a set of tasks between two dates in one go, and optionally plan a packing list.
+// settings.trip = { from, to, taskIds, note }
+
+export function startTrip(state, { from, to, taskIds, packId = null, packDate = null, note = '' }) {
+  for (const id of taskIds) {
+    const task = state.tasks.find((t) => t.id === id);
+    if (task) pauseTask(task, from, to);
+  }
+  const pack = packId && state.tasks.find((t) => t.id === packId);
+  if (pack && packDate) addWheneverDate(pack, packDate);
+  state.settings.trip = { from, to, taskIds: [...taskIds], note };
+}
+
+export function activeTrip(state, todayKey) {
+  const trip = state.settings?.trip;
+  return trip && trip.to >= todayKey ? trip : null;
+}
+
+// End the trip now: tasks come back from today (or the trip is called off if it hasn't started).
+export function endTrip(state, todayKey) {
+  const trip = state.settings?.trip;
+  if (!trip) return;
+  for (const id of trip.taskIds) {
+    const task = state.tasks.find((t) => t.id === id);
+    if (!task) continue;
+    if (trip.from > todayKey) {
+      task.pauses = (task.pauses || []).filter((p) => !(p.from === trip.from && p.to === trip.to));
+      task.updatedAt = Date.now();
+    } else resumeTask(task, todayKey);
+  }
+  delete state.settings.trip;
+}
+
 // ---------- Days off ----------
 // A day off (sick day, travel day...) never counts against you in history.
 

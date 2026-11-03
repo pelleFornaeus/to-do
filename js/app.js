@@ -1,7 +1,7 @@
 import { store } from './store.js';
 import { sync } from './sync.js';
 import {
-  computeHistory, perWeek, rangeStart, reportText, shortDate, weeklyBuckets,
+  computeHistory, perWeek, rangeStart, reportText, shortDate, weeklyBuckets, weekReview, yearReview, MONTH_NAMES,
 } from './history.js';
 import {
   WEEKDAYS, addDays, formatDay, formatLongDate, formatMinutes, logicalToday,
@@ -9,7 +9,7 @@ import {
 import {
   DEFAULT_LEVELS, levelRules, addMinutes, addQuickTask, deleteTask, describeSchedule, getEntry,
   activePause, addWheneverDate, clearHistoryBefore, isWhenever, nextWheneverDate,
-  removeWheneverDate, upcomingItems, isPerWeek, reorderTasks, streak, weekDone, isDayOff, isPaused, pauseTask, resumeTask, setDayOff,
+  removeWheneverDate, upcomingItems, activeTrip, endTrip, startTrip, isPerWeek, reorderTasks, streak, weekDone, isDayOff, isPaused, pauseTask, resumeTask, setDayOff,
   hasLevels, isRepeating, itemsForDay, moveOnceTask, nextOrder, setDone, setLevel,
   parseQuickAdd, setGoal, setMinutes, setSkipped, snapshotPlanned, startTimer, stopTimer,
   toggleSub, uid, visibleSubtasks,
@@ -26,6 +26,9 @@ const ui = {
   expanded: new Set(),
   doneOpen: false,
   upcomingOpen: true,
+  travel: null, // travel mode form
+  page: null, // 'week' or 'year' inside History
+  year: null,
   editor: null, // draft task being edited
   histRange: '30',
 };
@@ -64,9 +67,9 @@ function renderAll() {
     b.classList.toggle('active', b.dataset.tab === ui.tab);
   });
   const main = $('#main');
-  if (ui.tab === 'today') main.innerHTML = renderToday();
+  if (ui.tab === 'today') main.innerHTML = ui.travel ? renderTravel() : renderToday();
   else if (ui.tab === 'tasks') main.innerHTML = renderTasks();
-  else if (ui.tab === 'history') main.innerHTML = renderHistory();
+  else if (ui.tab === 'history') main.innerHTML = ui.page === 'week' ? renderWeekReview() : ui.page === 'year' ? renderYearReview() : renderHistory();
   else main.innerHTML = renderSettings();
   renderEditor();
 }
@@ -92,6 +95,9 @@ function renderToday() {
       </div>
       <button class="icon-btn" data-action="next-day" aria-label="Next day">›</button>
     </header>
+
+    ${key === t ? renderTripBanner(t) : ''}
+    ${key === t ? renderReviewCard(t) : ''}
 
     ${dayOff ? `
       <div class="day-off-banner">
@@ -127,8 +133,82 @@ function renderToday() {
 
     ${key === t ? renderUpcoming(t) : ''}
 
-    ${!dayOff ? '<p class="day-off-link"><button class="link" data-action="day-off">Mark as a day off (sick, travel…)</button></p>' : ''}
+    <p class="day-off-link">
+      ${!dayOff ? '<button class="link" data-action="day-off">Mark as a day off (sick…)</button>' : ''}
+      ${key >= t && !activeTrip(S(), t) ? '<button class="link" data-action="travel">Going away? Travel mode</button>' : ''}
+    </p>
   `;
+}
+
+function renderTripBanner(t) {
+  const trip = activeTrip(S(), t);
+  if (!trip) return '';
+  const started = trip.from <= t;
+  const n = trip.taskIds.length;
+  return `
+    <div class="trip-banner">
+      <div><strong>✈️ ${started ? 'Traveling' : 'Trip coming up'}${trip.note ? `: ${esc(trip.note)}` : ''}</strong><br>
+      <span class="small">${esc(shortDate(trip.from))} – ${esc(shortDate(trip.to))} · ${n} task${n === 1 ? '' : 's'} paused</span></div>
+      <button class="btn small" data-action="end-trip">${started ? 'I’m back' : 'Cancel trip'}</button>
+    </div>`;
+}
+
+// On the first two days of the week, a short look back at last week.
+function renderReviewCard(t) {
+  const startDay = S().settings.weekStart ?? 1;
+  const wk = addDays(t, -((new Date(`${t}T12:00`).getDay() - startDay + 7) % 7));
+  if (addDays(wk, 1) < t || S().settings.reviewSeen === wk) return '';
+  const r = weekReview(S(), t);
+  const o = r.h.overall;
+  if (!(o.done + o.missed)) return '';
+  return `
+    <div class="review-card">
+      <button class="icon-btn small review-x" data-action="review-dismiss" data-week="${wk}" aria-label="Dismiss">×</button>
+      <strong>Last week: ${o.done} of ${o.done + o.missed} done (${pctText(o.rate)})</strong>
+      <span class="small">${r.best.length ? `Nailed it: ${r.best.map((x) => esc(x.task.title)).join(', ')}. ` : ''}${r.missed.length ? `Missed most: ${esc(r.missed[0].task.title)}.` : 'Nothing missed!'}</span>
+      <button class="link" data-action="open-week-review">See the full review</button>
+    </div>`;
+}
+
+function renderTravel() {
+  const d = ui.travel;
+  const t = today();
+  const repeating = S().tasks.filter((x) => isRepeating(x) && !isWhenever(x) && !x.archived)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const lists = S().tasks.filter((x) => isWhenever(x) && !x.archived);
+  return `
+    <header class="page-header"><button class="link back" data-action="travel-cancel">‹ Today</button></header>
+    <h1 class="page-title">Travel mode</h1>
+    <p class="hint">Pause what you won't do while you're away. Everything comes back on its own when the trip ends.</p>
+    <div class="card">
+      <div class="pause-add">
+        <label class="field"><span>Leaving</span><input type="date" data-travel="from" value="${esc(d.from)}" min="${esc(t)}" /></label>
+        <label class="field"><span>Back</span><input type="date" data-travel="to" value="${esc(d.to)}" min="${esc(d.from)}" /></label>
+      </div>
+      <label class="field"><span>Where to? (optional)</span><input type="text" data-travel="note" value="${esc(d.note)}" placeholder="e.g. Chicago" /></label>
+    </div>
+    <div class="card">
+      <h2 class="section tight">Pause while away</h2>
+      ${repeating.length ? repeating.map((x) => `
+        <label class="field row"><input type="checkbox" data-travel-task="${x.id}" ${d.taskIds.includes(x.id) ? 'checked' : ''} /><span>${esc(x.title)} <span class="muted small">· ${esc(describeSchedule(x))}</span></span></label>`).join('')
+    : '<p class="hint">No repeating tasks yet.</p>'}
+      <p class="hint">Untick anything you'll keep doing, like the gym.</p>
+    </div>
+    ${lists.length ? `
+    <div class="card">
+      <h2 class="section tight">Packing list</h2>
+      <label class="field"><span>Add a checklist</span>
+        <select data-travel="packId">
+          <option value="">None</option>
+          ${lists.map((x) => `<option value="${x.id}" ${d.packId === x.id ? 'selected' : ''}>${esc(x.title)}</option>`).join('')}
+        </select>
+      </label>
+      <label class="field"><span>On</span><input type="date" data-travel="packDate" value="${esc(d.packDate)}" /></label>
+    </div>` : ''}
+    <div class="btn-row">
+      <button class="btn primary" data-action="travel-start">Start travel mode</button>
+      <button class="btn" data-action="travel-cancel">Cancel</button>
+    </div>`;
 }
 
 function renderUpcoming(t) {
@@ -344,6 +424,11 @@ function renderHistory() {
 
   const h = currentHistory();
   const o = h.overall;
+  const reviewButtons = `
+    <div class="btn-row review-buttons">
+      <button class="btn" data-action="open-week-review">📋 Weekly review</button>
+      <button class="btn" data-action="open-year">✨ ${new Date(`${today()}T12:00`).getFullYear()} in review</button>
+    </div>`;
   const tiles = [
     ['Tasks done', pctText(o.rate), `${o.done} done · ${o.missed} missed`],
     ['Everything done', `${o.perfectDays}`, `of ${o.activeDays} day${o.activeDays === 1 ? '' : 's'}`],
@@ -354,6 +439,7 @@ function renderHistory() {
 
   return `
     ${head}
+    ${reviewButtons}
     <div class="tiles">
       ${tiles.map(([label, value, sub]) => `
         <div class="tile"><span class="tile-label">${label}</span><strong>${value}</strong><span class="tile-sub">${sub}</span></div>`).join('')}
@@ -384,6 +470,67 @@ function renderHistory() {
       <p class="flush-p">Copy a summary of this period, then paste it into Claude to get a written review with patterns and suggestions. Nothing is sent anywhere by the app.</p>
       <div class="btn-row"><button class="btn primary" data-action="copy-report">Copy summary for Claude</button></div>
       <details class="per-day"><summary>See what gets copied</summary><pre class="report">${esc(reportText(h))}</pre></details>
+    </div>
+  `;
+}
+
+function renderWeekReview() {
+  const t = today();
+  const r = weekReview(S(), t);
+  const o = r.h.overall;
+  const list = (arr, fn) => (arr.length ? `<ul class="plain">${arr.map(fn).join('')}</ul>` : '');
+  return `
+    <header class="page-header"><button class="link back" data-action="close-page">‹ History</button></header>
+    <h1 class="page-title">Weekly review</h1>
+    <p class="muted">${esc(shortDate(r.from))} – ${esc(shortDate(r.to))}</p>
+    <div class="tiles">
+      <div class="tile"><span class="tile-label">Done</span><strong>${pctText(o.rate)}</strong><span class="tile-sub">${o.done} of ${o.done + o.missed}</span></div>
+      <div class="tile"><span class="tile-label">Everything done</span><strong>${o.perfectDays}</strong><span class="tile-sub">of ${o.activeDays} days</span></div>
+      ${o.daysOff ? `<div class="tile"><span class="tile-label">Days off</span><strong>${o.daysOff}</strong><span class="tile-sub">not counted</span></div>` : ''}
+    </div>
+    ${r.best.length ? `<div class="card"><h2 class="section tight">🏆 Nailed it</h2>${list(r.best, (x) => `<li>${esc(x.task.title)} <span class="muted">· ${x.done} of ${x.counted}</span></li>`)}</div>` : ''}
+    ${r.missed.length ? `<div class="card"><h2 class="section tight">👀 Needs attention</h2>${list(r.missed, (x) => `<li>${esc(x.task.title)} <span class="muted">· missed ${x.missed}</span></li>`)}</div>` : ''}
+    ${r.streaks.length ? `<div class="card"><h2 class="section tight">🔥 Streaks going</h2>${list(r.streaks, (x) => `<li>${esc(x.task.title)} <span class="muted">· ${x.streak} ${isPerWeek(x.task) ? 'weeks' : ''} in a row</span></li>`.replace('  ', ' '))}</div>` : ''}
+    <div class="card">
+      <h2 class="section tight">📅 This week</h2>
+      <ul class="plain week-ahead">${r.ahead.map((d) => `
+        <li><span class="wa-day">${esc(formatDay(d.key, t))}</span><span class="muted">${d.count} task${d.count === 1 ? '' : 's'}${d.oneTime.length ? ` · ${d.oneTime.map(esc).join(', ')}` : ''}</span></li>`).join('')}</ul>
+    </div>
+  `;
+}
+
+function renderYearReview() {
+  const t = today();
+  const thisYear = Number(t.slice(0, 4));
+  const firstYear = Number((Object.keys(S().days).sort()[0] || t).slice(0, 4));
+  const year = ui.year || thisYear;
+  const y = yearReview(S(), year, t);
+  const o = y.h.overall;
+  const years = [];
+  for (let yy = firstYear; yy <= thisYear; yy++) years.push(yy);
+  const card = (emoji, label, big, sub = '') => `
+    <div class="wrap-card"><span class="wrap-emoji">${emoji}</span><span class="wrap-label">${label}</span><strong class="wrap-big">${big}</strong>${sub ? `<span class="wrap-sub">${sub}</span>` : ''}</div>`;
+  const W = 640; const H = 160; const bw = 36; const gap = (W - 12 * bw) / 12;
+  const bars = y.months.map((m) => {
+    const x = (m.month - 1) * (bw + gap) + gap / 2;
+    const bh = Math.max(3, (H - 30) * (m.rate || 0));
+    return `<path d="${roundedTopBar(x, H - 24 - bh, bw, bh, 4)}" class="bar-fill" /><rect x="${x}" y="0" width="${bw}" height="${H - 24}" class="hit" data-tip="${MONTH_NAMES[m.month - 1]}: ${pctText(m.rate)} done (${m.done})" />`;
+  }).join('');
+  const labels = MONTH_NAMES.map((n, i) => `<text x="${i * (bw + gap) + gap / 2 + bw / 2}" y="${H - 6}" class="axis" text-anchor="middle">${n[0]}</text>`).join('');
+  return `
+    <header class="page-header"><button class="link back" data-action="close-page">‹ History</button></header>
+    ${years.length > 1 ? `<div class="levels range-row">${years.map((yy) => `<button class="chip ${yy === year ? 'on' : ''}" data-action="pick-year" data-year="${yy}">${yy}</button>`).join('')}</div>` : ''}
+    <div class="wrap">
+      <div class="wrap-hero"><span>Your</span><strong>${year}</strong><span>${year === thisYear ? 'so far' : 'in review'}</span></div>
+      ${card('✅', 'Tasks done', o.done.toLocaleString(), `${pctText(o.rate)} of everything on your list`)}
+      ${card('🌟', 'Perfect days', o.perfectDays, 'days you finished everything')}
+      ${y.top ? card('🏅', 'Your top task', esc(y.top.task.title), `done ${y.top.done} times`) : ''}
+      ${y.longest?.bestStreak > 1 ? card('🔥', 'Longest streak', `${y.longest.bestStreak} ${isPerWeek(y.longest.task) ? 'weeks' : 'in a row'}`, esc(y.longest.task.title)) : ''}
+      ${y.bestMonth ? card('📆', 'Most consistent month', MONTH_NAMES[y.bestMonth.month - 1], `${pctText(y.bestMonth.rate)} done`) : ''}
+      ${y.timeTasks.map((x) => card('⏱️', `Time on ${esc(x.task.title)}`, formatMinutes(x.minutes), `goal met ${x.goalMet} of ${x.timeRuns} times`)).join('')}
+      ${y.busiestDay?.done ? card('💪', 'Busiest day', esc(formatLongDate(y.busiestDay.key)), `${y.busiestDay.done} things done`) : ''}
+      ${o.daysOff ? card('🛌', 'Days off', o.daysOff, 'rest counts too') : ''}
+      ${y.months.length ? `<div class="card"><h2 class="section tight">Month by month</h2><svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Share done each month">${bars}${labels}</svg></div>` : ''}
     </div>
   `;
 }
@@ -1058,6 +1205,8 @@ function onClick(e) {
   const tabBtn = e.target.closest('.tabbar button');
   if (tabBtn) {
     ui.tab = tabBtn.dataset.tab;
+    ui.page = null;
+    ui.travel = null;
     if (ui.tab === 'today') ui.viewKey = today();
     render();
     window.scrollTo(0, 0);
@@ -1167,6 +1316,33 @@ function onClick(e) {
     case 'go-today': ui.viewKey = today(); render(); break;
     case 'toggle-done': ui.doneOpen = !ui.doneOpen; render(); break;
     case 'toggle-upcoming': ui.upcomingOpen = !ui.upcomingOpen; render(); break;
+    case 'travel': {
+      const t = today();
+      const from = addDays(t, 1);
+      const lists = S().tasks.filter((x) => isWhenever(x) && !x.archived);
+      const pack = lists.find((x) => /pack/i.test(x.title)) || null;
+      ui.travel = {
+        from, to: addDays(from, 6), note: '',
+        taskIds: S().tasks.filter((x) => isRepeating(x) && !isWhenever(x) && !x.archived).map((x) => x.id),
+        packId: pack?.id || '', packDate: t,
+      };
+      render(); window.scrollTo(0, 0);
+      break;
+    }
+    case 'travel-cancel': ui.travel = null; render(); break;
+    case 'travel-start': {
+      const d = ui.travel;
+      if (!d.from || !d.to || d.to < d.from) { alert('Pick when you leave and when you’re back.'); break; }
+      ui.travel = null;
+      undoable(`Travel mode on: ${d.taskIds.length} task${d.taskIds.length === 1 ? '' : 's'} paused`, () => startTrip(S(), d));
+      break;
+    }
+    case 'end-trip': undoable('Welcome back! Tasks are back on your list.', () => endTrip(S(), today())); break;
+    case 'review-dismiss': S().settings.reviewSeen = btn.dataset.week; store.save(); break;
+    case 'open-week-review': ui.tab = 'history'; ui.page = 'week'; render(); window.scrollTo(0, 0); break;
+    case 'open-year': ui.page = 'year'; ui.year = null; render(); window.scrollTo(0, 0); break;
+    case 'pick-year': ui.year = Number(btn.dataset.year); render(); break;
+    case 'close-page': ui.page = null; render(); window.scrollTo(0, 0); break;
     case 'use-today':
       addWheneverDate(task, today());
       store.save();
@@ -1268,6 +1444,17 @@ function onSubmit(e) {
 
 function onChange(e) {
   const el = e.target;
+  if (ui.travel && (el.dataset.travel || el.dataset.travelTask)) {
+    if (el.dataset.travelTask) {
+      const ids = new Set(ui.travel.taskIds);
+      el.checked ? ids.add(el.dataset.travelTask) : ids.delete(el.dataset.travelTask);
+      ui.travel.taskIds = [...ids];
+    } else {
+      ui.travel[el.dataset.travel] = el.value;
+      if (el.dataset.travel === 'from' && ui.travel.to < el.value) { ui.travel.to = el.value; render(); }
+    }
+    return;
+  }
   if (el.dataset.bind) { bindInput(el); return; }
   if (el.dataset.setting) {
     const k = el.dataset.setting;
