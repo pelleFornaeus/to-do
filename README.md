@@ -18,6 +18,7 @@ A daily to-do list that runs entirely in your browser. No AI, no server, no acco
 - **Weekly review.** At the start of each week a card sums up last week. The full review (History → Weekly review) shows what went well, what needs attention, streaks and the week ahead.
 - **Year in review.** History → "2026 in review": tasks done, perfect days, top task, longest streak, best month, time logged.
 - **Reminders.** Set "Remind me at" on a task (e.g. Gym at 6pm) and an optional morning summary in Settings → Reminders. On iPhone this needs the home-screen app and the one-time setup below.
+- **Meal planner link.** Settings → Meal planner shows today's meals and how much is left on the [meal planner](https://pellefornaeus.github.io/meal-planner/)'s shopping list on Today, with a button to add "Grocery shopping" to your list. It only reads from the meal planner (same sign-in), using the meal planner's own code.
 - **Days off.** Mark any day (a sick day, a travel day) as a day off from the Today tab. Nothing on it counts as missed.
 - **Pause a task.** Pause the kitchen while you travel and keep the gym going. Pause from the task's details on Today, or set dates in the task editor. Paused days don't count.
 - **Clear history.** Settings > History starts your history fresh from a chosen date.
@@ -60,5 +61,7 @@ npm test    # runs the logic tests (Node 20+)
 - `js/model.js`: tasks, schedules, levels, multi-day runs, time goals
 - `js/app.js`: the interface
 - `js/store.js`: saving to the browser
+- `js/meals.js`: reads the meal planner's synced data (`meal_records`) and loads its code from `../meal-planner/js/` on the same site.
+- `js/notify.js`, `supabase/functions/todo-reminders/`: reminders (Web Push).
 - `js/records.js`, `js/sync.js`: syncing through Supabase. Data is split into small records (a task, a day, one task's progress on a day). The newest change to each record wins, so two devices can check off different things at the same time.
 - `sw.js`: offline support. Online it always loads the latest files; offline it uses the saved copy. Bump `CACHE` and add new files to `ASSETS` when releasing.

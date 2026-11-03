@@ -1,5 +1,6 @@
 import { store } from './store.js';
 import { sync } from './sync.js';
+import { MEAL_APP_URL, hasMealData, mealSummary, meals, refreshMeals } from './meals.js';
 import { disablePush, enablePush, isHomeScreenApp, pushOn, pushSupported, refreshPush, testPush } from './notify.js';
 import {
   computeHistory, perWeek, rangeStart, reportText, shortDate, weeklyBuckets, weekReview, yearReview, MONTH_NAMES,
@@ -132,6 +133,8 @@ function renderToday() {
       ${key === t ? '<p class="hint">Finished tasks clear off at the end of the day.</p>' : ''}
     ` : ''}
 
+    ${renderMealBox(key)}
+
     ${key === t ? renderUpcoming(t) : ''}
 
     <p class="day-off-link">
@@ -139,6 +142,56 @@ function renderToday() {
       ${key >= t && !activeTrip(S(), t) ? '<button class="link" data-action="travel">Going away? Travel mode</button>' : ''}
     </p>
   `;
+}
+
+// ---------- Meal planner ----------
+const mealView = new Map(); // day -> last summary shown, so redraws don't flicker
+
+function mealsOn() {
+  return S().settings.mealLink && sync.user;
+}
+
+function renderMealBox(key) {
+  if (!mealsOn()) return '';
+  queueMicrotask(() => fillMeals(key));
+  return `<div id="meal-box" data-day="${key}">${mealView.has(key) ? mealBoxHtml(key, mealView.get(key)) : ''}</div>`;
+}
+
+async function fillMeals(key) {
+  try {
+    const sum = await mealSummary(key);
+    const box = $('#meal-box');
+    if (!box || box.dataset.day !== key) return;
+    const html = mealBoxHtml(key, sum);
+    mealView.set(key, sum);
+    if (box.innerHTML !== html) box.innerHTML = html;
+  } catch (e) {
+    console.error('Meal plan', e);
+  }
+}
+
+function mealBoxHtml(key, sum) {
+  if (!sum) {
+    return hasMealData() || meals.lastError
+      ? `<div class="card meal-card"><p class="hint flush">${esc(meals.lastError || 'Loading your meal plan…')}</p></div>`
+      : '';
+  }
+  const t = today();
+  const label = { cook: 'Cook', leftover: 'Leftovers' };
+  const groceryTask = itemsForDay(S(), key, t).find((i) => /^grocery shopping/i.test(i.task.title));
+  return `
+    <div class="card meal-card">
+      <div class="meal-head"><strong>🍽️ Meals ${key === t ? 'today' : esc(formatDay(key, t).toLowerCase())}</strong>
+        <a class="link small" href="${esc(MEAL_APP_URL)}">Meal planner ›</a></div>
+      ${sum.entries.length ? `<ul class="plain meal-list">${sum.entries.map((e) => `
+        <li><span class="muted meal-slot">${esc(e.slot)}</span><span>${esc(e.name)}</span>${label[e.kind] ? `<span class="badge">${label[e.kind]}</span>` : ''}</li>`).join('')}</ul>`
+    : '<p class="hint flush">No meals planned.</p>'}
+      ${key === t && sum.shopLeft ? `
+        <div class="meal-shop">
+          <span>🛒 ${sum.shopLeft} item${sum.shopLeft === 1 ? '' : 's'} left on your shopping list</span>
+          ${groceryTask ? '' : `<button class="btn small" data-action="add-grocery" data-count="${sum.shopLeft}">Add to today</button>`}
+        </div>` : ''}
+    </div>`;
 }
 
 function renderTripBanner(t) {
@@ -787,6 +840,14 @@ function renderSettings() {
 
     ${renderSyncCard()}
     ${renderRemindersCard()}
+    <div class="card">
+      <h2 class="section tight">Meal planner</h2>
+      <label class="field row">
+        <input type="checkbox" data-setting="mealLink" ${st.mealLink ? 'checked' : ''} ${sync.user ? '' : 'disabled'} />
+        <span>Show today's meals and shopping list on Today</span>
+      </label>
+      <p class="hint">${sync.user ? 'Sign in to the meal planner with the same email as here. The list is read from it, nothing is changed there.' : 'Sign in under Sync first (with the same email as the meal planner).'}</p>
+    </div>
 
     <div class="card">
       <label class="field">
@@ -1463,6 +1524,12 @@ function onClick(e) {
     case 'hist-range': ui.histRange = btn.dataset.range; render(); break;
     case 'copy-report': copyReport(); break;
     case 'sign-up': syncAuth('up'); break;
+    case 'add-grocery':
+      addQuickTask(S(), `Grocery shopping (${btn.dataset.count} items)`, today());
+      store.save();
+      toast('Added “Grocery shopping” to today');
+      break;
+    case 'meals-refresh': refreshMeals(true); break;
     case 'push-on': pushAction(enablePush, 'Notifications are on'); break;
     case 'push-off': pushAction(disablePush, 'Notifications are off on this device'); break;
     case 'push-test': pushAction(testPush, (n) => (n ? 'Test sent. It should arrive in a few seconds.' : 'Nothing was sent. Try turning notifications off and on again.')); break;
@@ -1520,6 +1587,7 @@ function onChange(e) {
     const k = el.dataset.setting;
     S().settings[k] = el.type === 'checkbox' ? el.checked : Number(el.value);
     if (k === 'dayStartHour') ui.viewKey = today();
+    if (k === 'mealLink' && el.checked) refreshMeals(true);
     store.save();
     return;
   }
@@ -1637,6 +1705,11 @@ render();
 // Sync: redraw when changes arrive from another device, and keep the status line current.
 sync.init(store, () => store.save());
 refreshPush();
+meals.onChange(() => { if (ui.tab === 'today') render(); });
+const mealTick = () => { if (mealsOn()) refreshMeals(); };
+mealTick();
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') mealTick(); });
+setInterval(mealTick, 60_000);
 let lastSyncState = sync.status.state;
 sync.onStatus((st) => {
   const el = $('#sync-status');

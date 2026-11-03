@@ -1,7 +1,7 @@
 // Lets the app open offline.
 // Online: always fetch the latest files (skipping the browser's short-term cache), so
 // every file comes from the same version. Offline or very slow: use the saved copy.
-const CACHE = 'todo-v14';
+const CACHE = 'todo-v15';
 const ASSETS = [
   './',
   'index.html',
@@ -15,6 +15,7 @@ const ASSETS = [
   'js/sync.js',
   'js/config.js',
   'js/notify.js',
+  'js/meals.js',
   'manifest.webmanifest',
   'icons/icon-192.png',
   'icons/icon-512.png',
