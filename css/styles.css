@@ -377,3 +377,13 @@ h3 { margin: 0 0 8px; font-size: 15px; }
 /* Coming up and Whenever */
 .badge.due { background: var(--accent-soft); color: var(--accent); }
 .row-note { flex: none; margin-right: 16px; }
+
+/* Undo, streaks, reorder */
+.toast { display: flex; align-items: center; gap: 14px; }
+.toast-undo { color: var(--accent-soft); font-weight: 700; padding: 2px 4px; }
+.badge.streak { background: var(--warn-soft); color: var(--warn); }
+.drag-handle { flex: none; width: 32px; height: 40px; display: grid; place-items: center; color: var(--muted); touch-action: none; cursor: grab; }
+.drag-handle svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 3.2; stroke-linecap: round; }
+.task-row > .drag-handle { margin-left: 4px; margin-right: -10px; }
+li.dragging { opacity: 0.85; box-shadow: 0 6px 20px rgba(0,0,0,.18); position: relative; z-index: 5; }
+li.dragging .drag-handle { cursor: grabbing; }

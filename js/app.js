@@ -9,7 +9,7 @@ import {
 import {
   DEFAULT_LEVELS, levelRules, addMinutes, addQuickTask, deleteTask, describeSchedule, getEntry,
   activePause, addWheneverDate, clearHistoryBefore, isWhenever, nextWheneverDate,
-  removeWheneverDate, upcomingItems, isDayOff, isPaused, pauseTask, resumeTask, setDayOff,
+  removeWheneverDate, upcomingItems, isPerWeek, reorderTasks, streak, weekDone, isDayOff, isPaused, pauseTask, resumeTask, setDayOff,
   hasLevels, isRepeating, itemsForDay, moveOnceTask, nextOrder, setDone, setLevel,
   parseQuickAdd, setGoal, setMinutes, setSkipped, snapshotPlanned, startTimer, stopTimer,
   toggleSub, uid, visibleSubtasks,
@@ -106,12 +106,12 @@ function renderToday() {
       </div>` : ''}
 
     <form class="quick-add" data-form="quick-add">
-      <input id="quick-input" type="text" placeholder="${isPast ? 'Add a task to this day' : key === t ? 'Add a task (or “tomorrow …”)' : 'Add a task for this day'}" autocomplete="off" enterkeyhint="done" />
+      <input id="quick-input" type="text" placeholder="${isPast ? 'Add a task to this day' : key === t ? 'Add a task (try “friday …”)' : 'Add a task for this day'}" autocomplete="off" enterkeyhint="done" />
       <button type="submit" class="btn primary" aria-label="Add">Add</button>
     </form>
 
     <ul class="items">
-      ${open.map((i) => renderItem(i, key)).join('')}
+      ${open.map((i) => renderItem(i, key, open.length > 1)).join('')}
     </ul>
 
     ${!items.length ? `<p class="empty">Nothing planned. Add a task above, or set up repeating tasks in the Tasks tab.</p>` : ''}
@@ -143,7 +143,7 @@ function renderUpcoming(t) {
       <p class="hint">Check something off early and it counts for the day it's due.</p>` : ''}`;
 }
 
-function renderItem({ task, entry, carried, ref, dayNum, span, due }, key) {
+function renderItem({ task, entry, carried, ref, dayNum, span, due }, key, draggable = false) {
   const expanded = ui.expanded.has(task.id);
   const subs = visibleSubtasks(task, entry);
   const subsDone = subs.filter((s) => entry.subs[s.id]).length;
@@ -156,6 +156,9 @@ function renderItem({ task, entry, carried, ref, dayNum, span, due }, key) {
   if (task.timeGoal) {
     badges.push(`<span class="badge ${entry.timerStartedAt ? 'live' : ''}">${formatMinutes(entry.minutes)}${entry.goal ? ` / ${formatMinutes(entry.goal)}` : ''}${entry.timerStartedAt ? ' ⏱' : ''}</span>`);
   }
+  if (isPerWeek(task)) badges.push(`<span class="badge">${weekDone(S(), task, ref.start)} of ${task.schedule.times || 1} this week</span>`);
+  const st = isRepeating(task) && !isWhenever(task) ? streak(S(), task, today()) : 0;
+  if (st > 1) badges.push(`<span class="badge streak" title="In a row">🔥 ${st}${isPerWeek(task) ? ' wk' : ''}</span>`);
   if (entry.skipped) badges.push('<span class="badge">Skipped</span>');
 
   return `
@@ -168,7 +171,7 @@ function renderItem({ task, entry, carried, ref, dayNum, span, due }, key) {
           <span class="title">${esc(task.title)}</span>
           ${badges.length ? `<span class="badges">${badges.join('')}</span>` : ''}
         </button>
-        <span class="chev">${expanded ? '▾' : '▸'}</span>
+        ${draggable ? '<button class="drag-handle" aria-label="Drag to reorder" tabindex="-1"><svg viewBox="0 0 24 24"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01"/></svg></button>' : `<span class="chev">${expanded ? '▾' : '▸'}</span>`}
       </div>
       ${expanded ? renderDetails(task, entry, key, subs, span) : ''}
     </li>
@@ -252,7 +255,7 @@ function timerText(start) {
 function renderTasks() {
   const t = today();
   const whenever = S().tasks.filter((x) => isWhenever(x) && !x.archived)
-    .sort((a, b) => a.title.localeCompare(b.title));
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const onToday = new Set(itemsForDay(S(), t, t).map((i) => i.task.id));
   const repeating = S().tasks.filter((x) => isRepeating(x) && !isWhenever(x) && !x.archived)
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
@@ -270,6 +273,7 @@ function renderTasks() {
     const now = paused && isPaused(task, t);
     return `
     <li class="task-row ${ui.editor?.id === task.id ? 'selected' : ''} ${now ? 'is-paused' : ''}" data-id="${task.id}">
+      ${isRepeating(task) ? '<button class="drag-handle" aria-label="Drag to reorder" tabindex="-1"><svg viewBox="0 0 24 24"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01"/></svg></button>' : ''}
       <button class="task-open" data-action="edit">
         <span class="title">${esc(task.title)}${paused ? ` <span class="badge paused">${esc(paused)}</span>` : ''}</span>
         <span class="muted small">${esc(sub)}</span>
@@ -391,6 +395,8 @@ function taskStatRow(t, h) {
   if (t.task.timeGoal) extra.push(`${formatMinutes(t.minutes)} of ${formatMinutes(t.goal)} · goal met ${t.goalMet} of ${t.timeRuns}`);
   if (t.skipped) extra.push(`${t.skipped} skipped`);
   if (t.excused) extra.push(`${t.excused} on days off`);
+  if (t.weeks) extra.push(`weekly goal met ${t.weeksMet} of ${t.weeks} weeks`);
+  if (t.streak > 1) extra.push(`🔥 ${t.streak} ${isPerWeek(t.task) ? 'weeks' : ''} in a row`.replace('  ', ' '));
   const width = t.rate == null ? 0 : Math.round(t.rate * 100);
   return `
     <li class="stat-row">
@@ -597,6 +603,13 @@ function renderSettings() {
         </select>
       </label>
       <p class="hint">Anything you check off before this time still counts for the day before.</p>
+      <label class="field">
+        <span>Weeks start on</span>
+        <select data-setting="weekStart">
+          <option value="1" ${(st.weekStart ?? 1) === 1 ? 'selected' : ''}>Monday</option>
+          <option value="0" ${st.weekStart === 0 ? 'selected' : ''}>Sunday</option>
+        </select>
+      </label>
       <label class="field row">
         <input type="checkbox" data-setting="carryOver" ${st.carryOver ? 'checked' : ''} />
         <span>Carry unfinished one-time tasks over to the next day</span>
@@ -645,7 +658,7 @@ function blankDraft() {
     id: null,
     title: '',
     notes: '',
-    schedule: { type: 'daily', days: [], every: 2, day: 1, by: 'day', nth: '1', weekday: 6, date: today(), dates: [] },
+    schedule: { type: 'daily', days: [], every: 2, day: 1, by: 'day', nth: '1', weekday: 6, date: today(), dates: [], times: 3 },
     newDate: today(),
     startDate: today(),
     levels: [],
@@ -759,6 +772,7 @@ function renderEditor() {
               <option value="weekly" ${s.type === 'weekly' ? 'selected' : ''}>On certain weekdays</option>
               <option value="interval" ${s.type === 'interval' ? 'selected' : ''}>Every few days</option>
               <option value="monthly" ${s.type === 'monthly' ? 'selected' : ''}>Once a month</option>
+              <option value="perweek" ${s.type === 'perweek' ? 'selected' : ''}>A few times a week, any days</option>
               <option value="whenever" ${s.type === 'whenever' ? 'selected' : ''}>Whenever I need it (like a packing list)</option>
             </select>
           </label>
@@ -768,6 +782,9 @@ function renderEditor() {
             <div class="weekdays">
               ${WEEKDAYS.map((n, i) => `<button class="chip ${s.days.includes(i) ? 'on' : ''}" data-ed="weekday" data-day="${i}">${n}</button>`).join('')}
             </div>` : ''}
+          ${s.type === 'perweek' ? `
+            <label class="field"><span>Times a week</span><input type="number" min="1" max="7" inputmode="numeric" data-bind="schedule.times" data-num value="${esc(s.times)}" /></label>
+            <p class="hint">It stays on your list each day until you've done it that many times this week. Days you don't do it aren't counted as missed, only a week that falls short.</p>` : ''}
           ${s.type === 'interval' ? `
             <label class="field"><span>Every how many days</span><input type="number" min="1" inputmode="numeric" data-bind="schedule.every" data-num value="${esc(s.every)}" /></label>` : ''}
           ${s.type === 'monthly' ? `
@@ -950,6 +967,7 @@ function saveEditor() {
   const sched = { type: d.schedule.type };
   if (sched.type === 'once') sched.date = d.schedule.date || today();
   if (sched.type === 'weekly') sched.days = [...d.schedule.days].sort();
+  if (sched.type === 'perweek') sched.times = Math.min(7, Math.max(1, Number(d.schedule.times) || 1));
   if (sched.type === 'whenever') sched.dates = [...new Set(d.schedule.dates || [])].sort();
   if (sched.type === 'interval') sched.every = Math.max(1, Number(d.schedule.every) || 1);
   if (sched.type === 'monthly') {
@@ -1016,12 +1034,22 @@ function saveEditor() {
   store.save();
 }
 
-function toast(msg) {
+// A short message at the bottom. With `undo`, it gets an Undo button for a few seconds.
+function toast(msg, undo = null) {
   const el = $('#toast');
-  el.textContent = msg;
+  el.innerHTML = `<span>${esc(msg)}</span>${undo ? '<button class="toast-undo" data-action="undo">Undo</button>' : ''}`;
   el.hidden = false;
+  ui.undo = undo;
   clearTimeout(toast.t);
-  toast.t = setTimeout(() => { el.hidden = true; }, 2200);
+  toast.t = setTimeout(() => { el.hidden = true; ui.undo = null; }, undo ? 5000 : 2200);
+}
+
+// Take a copy of everything, so an action can be undone.
+function undoable(msg, fn) {
+  const before = structuredClone(S());
+  fn();
+  store.save();
+  toast(msg, () => { store.replace(before); toast('Undone'); });
 }
 
 // ---------- Events ----------
@@ -1115,10 +1143,9 @@ function onClick(e) {
       }
       case 'delete': {
         const task = findTask(d.id);
-        if (task && confirm(`Delete "${task.title}"? Past history is kept for reports.`)) {
-          deleteTask(S(), task);
+        if (task) {
           ui.editor = null;
-          store.save();
+          undoable(`Deleted "${task.title}"`, () => deleteTask(S(), task));
         }
         break;
       }
@@ -1146,20 +1173,20 @@ function onClick(e) {
       toast(`${task.title} added to today`);
       break;
     case 'remove-date':
-      removeWheneverDate(task, ref.start);
       ui.expanded.delete(task.id);
-      store.save();
+      undoable('Removed from this day', () => removeWheneverDate(task, ref.start));
       break;
     case 'expand':
       ui.expanded.has(task.id) ? ui.expanded.delete(task.id) : ui.expanded.add(task.id);
       render();
       break;
+    case 'undo': { const fn = ui.undo; ui.undo = null; $('#toast').hidden = true; fn?.(); break; }
     case 'toggle': {
       const entry = getEntry(S(), ref.start, task);
       const isDone = entry.done && (!entry.doneOn || entry.doneOn <= key);
-      setDone(S(), ref, task, !isDone);
-      if (!isDone) ui.expanded.delete(task.id);
-      store.save();
+      if (isDone) { setDone(S(), ref, task, false); store.save(); break; }
+      ui.expanded.delete(task.id);
+      undoable(ref.start > key ? 'Done early' : 'Done', () => setDone(S(), ref, task, true));
       break;
     }
     case 'sub': toggleSub(S(), ref, task, btn.dataset.sub); store.save(); break;
@@ -1179,33 +1206,26 @@ function onClick(e) {
     }
     case 'timer-start': startTimer(S(), ref, task); store.save(); break;
     case 'timer-stop': stopTimer(S(), ref, task); store.save(); break;
-    case 'skip': setSkipped(S(), ref, task, true); ui.expanded.delete(task.id); store.save(); break;
+    case 'skip': ui.expanded.delete(task.id); undoable('Skipped', () => setSkipped(S(), ref, task, true)); break;
     case 'unskip': setSkipped(S(), ref, task, false); store.save(); break;
     case 'tomorrow': moveOnceTask(S(), task, addDays(key < today() ? today() : key, 1)); ui.expanded.delete(task.id); store.save(); break;
-    case 'delete':
-      if (confirm(`Delete "${task.title}"?`)) { deleteTask(S(), task); store.save(); }
-      break;
+    case 'delete': undoable(`Deleted "${task.title}"`, () => deleteTask(S(), task)); break;
     case 'pause':
-      pauseTask(task, key < today() ? today() : key);
       ui.expanded.delete(task.id);
-      store.save();
-      toast('Paused. Resume it in Tasks.');
+      undoable('Paused. Resume it in Tasks.', () => pauseTask(task, key < today() ? today() : key));
       break;
     case 'resume': resumeTask(task, today()); store.save(); toast(`${task.title} is back on your list`); break;
     case 'day-off': {
       const note = prompt('Day off. Add a note if you like (e.g. sick, travel):', '');
       if (note === null) break;
-      setDayOff(S(), key, true, note.trim());
-      store.save();
+      undoable('Marked as a day off', () => setDayOff(S(), key, true, note.trim()));
       break;
     }
     case 'day-off-undo': setDayOff(S(), key, false); store.save(); break;
     case 'clear-history': {
       const before = $('#clear-before')?.value || today();
-      if (confirm(`Clear all history before ${formatLongDate(before)}? Check-offs, times and days off before then are removed. This cannot be undone.`)) {
-        clearHistoryBefore(S(), before);
-        store.save();
-        toast('History cleared');
+      if (confirm(`Clear all history before ${formatLongDate(before)}? Check-offs, times and days off before then are removed.`)) {
+        undoable('History cleared', () => clearHistoryBefore(S(), before));
       }
       break;
     }
@@ -1242,7 +1262,7 @@ function onSubmit(e) {
   input.value = '';
   addQuickTask(S(), title, key);
   store.save();
-  if (key !== ui.viewKey) toast(`Added to ${formatDay(key, today()).toLowerCase()}'s list`);
+  if (key !== ui.viewKey) toast(`Added for ${formatDay(key, today())}`);
   $('#quick-input')?.focus();
 }
 
@@ -1304,6 +1324,41 @@ document.addEventListener('input', onInput);
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && ui.editor) closeEditor();
 });
+
+// Drag to reorder: hold the ⋮⋮ handle and move up or down.
+let drag = null;
+document.addEventListener('pointerdown', (e) => {
+  const handle = e.target.closest('.drag-handle');
+  if (!handle) return;
+  const li = handle.closest('li[data-id]');
+  if (!li) return;
+  e.preventDefault();
+  try { handle.setPointerCapture(e.pointerId); } catch { /* fine */ }
+  drag = { li, list: li.parentElement, pointer: e.pointerId, moved: false };
+  li.classList.add('dragging');
+});
+document.addEventListener('pointermove', (e) => {
+  if (!drag || e.pointerId !== drag.pointer) return;
+  e.preventDefault();
+  const y = e.clientY;
+  const others = [...drag.list.children].filter((el) => el !== drag.li && el.matches('li[data-id]'));
+  const before = others.find((el) => { const r = el.getBoundingClientRect(); return y < r.top + r.height / 2; });
+  if (before) { if (drag.li.nextElementSibling !== before) { drag.list.insertBefore(drag.li, before); drag.moved = true; } }
+  else if (others.length && drag.li !== drag.list.lastElementChild) { others[others.length - 1].after(drag.li); drag.moved = true; }
+  if (y < 70) window.scrollBy(0, -8);
+  else if (y > window.innerHeight - 110) window.scrollBy(0, 8);
+}, { passive: false });
+function endDrag(e) {
+  if (!drag || e.pointerId !== drag.pointer) return;
+  const { li, list, moved } = drag;
+  drag = null;
+  li.classList.remove('dragging');
+  if (!moved) return;
+  reorderTasks(S(), [...list.querySelectorAll(':scope > li[data-id]')].map((el) => el.dataset.id));
+  store.save();
+}
+document.addEventListener('pointerup', endDrag);
+document.addEventListener('pointercancel', endDrag);
 
 store.subscribe(() => {
   // Don't wipe the editor while typing; it re-renders itself.
