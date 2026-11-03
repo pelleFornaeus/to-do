@@ -1,5 +1,6 @@
 import { store } from './store.js';
 import { sync } from './sync.js';
+import { disablePush, enablePush, isHomeScreenApp, pushOn, pushSupported, refreshPush, testPush } from './notify.js';
 import {
   computeHistory, perWeek, rangeStart, reportText, shortDate, weeklyBuckets, weekReview, yearReview, MONTH_NAMES,
 } from './history.js';
@@ -239,6 +240,7 @@ function renderItem({ task, entry, carried, ref, dayNum, span, due }, key, dragg
   if (isPerWeek(task)) badges.push(`<span class="badge">${weekDone(S(), task, ref.start)} of ${task.schedule.times || 1} this week</span>`);
   const st = isRepeating(task) && !isWhenever(task) ? streak(S(), task, today()) : 0;
   if (st > 1) badges.push(`<span class="badge streak" title="In a row">🔥 ${st}${isPerWeek(task) ? ' wk' : ''}</span>`);
+  if (task.remind && !entry.done && !due) badges.push(`<span class="badge">⏰ ${esc(fmtTime(task.remind))}</span>`);
   if (entry.skipped) badges.push('<span class="badge">Skipped</span>');
 
   return `
@@ -674,6 +676,49 @@ function syncStatusText() {
   }
 }
 
+const fmtTime = (hhmm) => {
+  const [h, m] = hhmm.split(':').map(Number);
+  return new Date(2000, 0, 1, h, m).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+};
+
+function renderRemindersCard() {
+  const st = S().settings;
+  let body;
+  if (!sync.user) body = '<p class="hint">Reminders come from your sync account, so sign in under Sync first.</p>';
+  else if (!pushSupported() || (!isHomeScreenApp() && /iPhone|iPad/.test(navigator.userAgent))) {
+    body = '<p class="hint">On iPhone, reminders work in the app opened from your home screen (iOS 16.4 or newer). Open it from there and come back here.</p>';
+  } else if (pushOn()) {
+    body = `
+      <p class="flush-p sync-status ok">Notifications are on for this device.</p>
+      <label class="field"><span>Morning summary</span><input type="time" data-setting-text="summaryAt" value="${esc(st.summaryAt || '')}" /></label>
+      <p class="hint">A list of what's on today, at this time. Leave it empty for none. To be reminded about a single task, set “Remind me at” in the task.</p>
+      <p class="form-msg" id="push-msg" hidden></p>
+      <div class="btn-row">
+        <button class="btn" data-action="push-test">Send a test</button>
+        <button class="btn" data-action="push-off">Turn off on this device</button>
+      </div>`;
+  } else {
+    body = `
+      <p class="hint">Get a notification at the time you choose for a task, like “Gym” at 6pm, and an optional morning summary.</p>
+      <p class="form-msg" id="push-msg" hidden></p>
+      <div class="btn-row"><button class="btn primary" data-action="push-on">Turn on notifications</button></div>`;
+  }
+  return `<div class="card"><h2 class="section tight">Reminders</h2>${body}</div>`;
+}
+
+async function pushAction(fn, okMsg) {
+  const msg = $('#push-msg');
+  const say = (text, isError) => { if (msg) { msg.textContent = text; msg.hidden = false; msg.classList.toggle('error', !!isError); } };
+  say('One moment…');
+  try {
+    const r = await fn();
+    render();
+    if (okMsg) toast(typeof okMsg === 'function' ? okMsg(r) : okMsg);
+  } catch (e) {
+    say(e.message, true);
+  }
+}
+
 function renderSyncCard() {
   const user = sync.user;
   if (user) {
@@ -741,6 +786,7 @@ function renderSettings() {
     <header class="page-header"><h1>Settings</h1></header>
 
     ${renderSyncCard()}
+    ${renderRemindersCard()}
 
     <div class="card">
       <label class="field">
@@ -815,6 +861,7 @@ function blankDraft() {
     useTime: false,
     timeGoal: { minutes: 60, byDay: {} },
     spanDays: 1,
+    remind: '',
     levelDays: {},
     pauses: [],
     newPause: { from: today(), to: '' },
@@ -849,6 +896,7 @@ function draftFromTask(task) {
     useTime: !!task.timeGoal,
     timeGoal: task.timeGoal ? structuredClone({ byDay: {}, ...task.timeGoal }) : d.timeGoal,
     spanDays: task.spanDays || 1,
+    remind: task.remind || '',
     levelDays: { ...(task.levelDays || {}) },
     pauses: structuredClone(task.pauses || []),
   };
@@ -970,6 +1018,9 @@ function renderEditor() {
             </div>` : ''}
           ${s.type !== 'once' && s.type !== 'whenever' ? `
             <label class="field"><span>Starting</span><input type="date" data-bind="startDate" value="${esc(d.startDate)}" /></label>` : ''}
+          <label class="field inline"><span class="wide-label">Remind me at</span>
+            <input type="time" class="time-input" data-bind="remind" value="${esc(d.remind || '')}" />
+          </label>
           <label class="field inline"><span class="wide-label">Takes</span>
             <span class="days-input"><input type="number" min="1" max="14" inputmode="numeric" data-bind="spanDays" data-num value="${esc(d.spanDays)}" /> day(s)</span>
           </label>
@@ -1156,6 +1207,7 @@ function saveEditor() {
         return step;
       }),
     spanDays: Math.min(14, Math.max(1, Number(d.spanDays) || 1)),
+    remind: d.remind || null,
     pauses: sched.type === 'once' || sched.type === 'whenever' ? undefined : d.pauses,
     levelDays: levels.length ? cleanByDay(d.levelDays, (v) => Math.min(14, Math.max(1, Number(v) || 1))) : {},
     timeGoal: d.useTime
@@ -1411,6 +1463,9 @@ function onClick(e) {
     case 'hist-range': ui.histRange = btn.dataset.range; render(); break;
     case 'copy-report': copyReport(); break;
     case 'sign-up': syncAuth('up'); break;
+    case 'push-on': pushAction(enablePush, 'Notifications are on'); break;
+    case 'push-off': pushAction(disablePush, 'Notifications are off on this device'); break;
+    case 'push-test': pushAction(testPush, (n) => (n ? 'Test sent. It should arrive in a few seconds.' : 'Nothing was sent. Try turning notifications off and on again.')); break;
     case 'sync-now': sync.syncNow(); break;
     case 'sign-out':
       if (confirm('Sign out? Your data stays on this device, but it stops syncing.')) {
@@ -1456,6 +1511,11 @@ function onChange(e) {
     return;
   }
   if (el.dataset.bind) { bindInput(el); return; }
+  if (el.dataset.settingText) {
+    S().settings[el.dataset.settingText] = el.value || null;
+    store.save();
+    return;
+  }
   if (el.dataset.setting) {
     const k = el.dataset.setting;
     S().settings[k] = el.type === 'checkbox' ? el.checked : Number(el.value);
@@ -1576,6 +1636,7 @@ render();
 
 // Sync: redraw when changes arrive from another device, and keep the status line current.
 sync.init(store, () => store.save());
+refreshPush();
 let lastSyncState = sync.status.state;
 sync.onStatus((st) => {
   const el = $('#sync-status');

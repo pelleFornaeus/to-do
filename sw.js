@@ -1,7 +1,7 @@
 // Lets the app open offline.
 // Online: always fetch the latest files (skipping the browser's short-term cache), so
 // every file comes from the same version. Offline or very slow: use the saved copy.
-const CACHE = 'todo-v13';
+const CACHE = 'todo-v14';
 const ASSETS = [
   './',
   'index.html',
@@ -14,6 +14,7 @@ const ASSETS = [
   'js/records.js',
   'js/sync.js',
   'js/config.js',
+  'js/notify.js',
   'manifest.webmanifest',
   'icons/icon-192.png',
   'icons/icon-512.png',
@@ -53,5 +54,28 @@ self.addEventListener('fetch', (e) => {
     } catch { /* offline */ }
     const cached = await cache.match(req, { ignoreSearch: true });
     return cached || network;
+  })());
+});
+
+// Reminders sent from the server.
+self.addEventListener('push', (e) => {
+  let data = {};
+  try { data = e.data ? e.data.json() : {}; } catch { data = { title: 'To-Do', body: e.data?.text() }; }
+  e.waitUntil(self.registration.showNotification(data.title || 'To-Do', {
+    body: data.body || '',
+    tag: data.tag,
+    icon: 'icons/icon-192.png',
+    badge: 'icons/icon-192.png',
+    data: { url: data.url || './' },
+  }));
+});
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  e.waitUntil((async () => {
+    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const open = all.find((c) => 'focus' in c);
+    if (open) return open.focus();
+    return self.clients.openWindow(e.notification.data?.url || './');
   })());
 });

@@ -17,6 +17,7 @@ A daily to-do list that runs entirely in your browser. No AI, no server, no acco
 - **Travel mode.** "Going away? Travel mode" on Today pauses the tasks you pick between two dates (keep the gym going if you like) and can put your packing list on the day you choose. "I'm back" ends it early.
 - **Weekly review.** At the start of each week a card sums up last week. The full review (History → Weekly review) shows what went well, what needs attention, streaks and the week ahead.
 - **Year in review.** History → "2026 in review": tasks done, perfect days, top task, longest streak, best month, time logged.
+- **Reminders.** Set "Remind me at" on a task (e.g. Gym at 6pm) and an optional morning summary in Settings → Reminders. On iPhone this needs the home-screen app and the one-time setup below.
 - **Days off.** Mark any day (a sick day, a travel day) as a day off from the Today tab. Nothing on it counts as missed.
 - **Pause a task.** Pause the kitchen while you travel and keep the gym going. Pause from the task's details on Today, or set dates in the task editor. Paused days don't count.
 - **Clear history.** Settings > History starts your history fresh from a chosen date.
@@ -35,6 +36,17 @@ Sync uses a free [Supabase](https://supabase.com) project. The project address a
 
 1. In Supabase, open **SQL Editor**, paste in [`supabase/setup.sql`](supabase/setup.sql) and press **Run**. This creates the table, and each account can only see its own rows.
 2. Open **Authentication → URL Configuration** and set **Site URL** to `https://pellefornaeus.github.io/to-do/`. That's where the "confirm your email" link takes you.
+
+### Reminders setup (one time)
+
+Reminders are sent by a small Supabase function, because a phone can't schedule them on its own.
+
+1. In Supabase, open **SQL Editor**, paste in [`supabase/reminders.sql`](supabase/reminders.sql) and press **Run**. This makes the tables and checks for due reminders every 5 minutes.
+2. Open **Edge Functions → Deploy a new function → Via Editor**. Name it exactly `todo-reminders` (the name can't be changed later), paste in [`supabase/functions/todo-reminders/index.ts`](supabase/functions/todo-reminders/index.ts) and deploy.
+3. In the function's **Details**, turn **Verify JWT** off and save. The function checks sign-ins itself.
+4. In the app (from the home screen on iPhone): **Settings → Reminders → Turn on notifications**, then **Send a test**.
+
+The function loads the app's own code from the website when it's deployed, so after big app updates, open it and press **Deploy** again.
 
 ## For developers
 
