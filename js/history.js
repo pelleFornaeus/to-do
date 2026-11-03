@@ -1,7 +1,9 @@
 // History and trends: works out how things went over a range of days.
 // Pure functions on the saved state, so they can be tested without a browser.
 import { addDays, diffDays, formatMinutes, fromKey } from './dates.js';
-import { describeSchedule, getEntry, isDayOff, isRepeating, itemsForDay } from './model.js';
+import {
+  describeSchedule, getEntry, isDayOff, isPerWeek, isRepeating, itemsForDay, streak, weekDone, weekExcused, weekStart,
+} from './model.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 export const shortDate = (key) => { const d = fromKey(key); return `${MONTHS[d.getMonth()]} ${d.getDate()}`; };
@@ -44,6 +46,11 @@ export function computeHistory(state, fromKey, toKey, todayKey) {
     let done = 0;
     let skipped = 0;
     for (const item of items) {
+      // "A few times a week": a day without it isn't a miss (weeks are checked below).
+      if (isPerWeek(item.task) && !doneThatDay(item, key)) {
+        if (!firstSeen.has(item.task.id)) firstSeen.set(item.task.id, key);
+        continue;
+      }
       if (item.entry.skipped) skipped++;
       else {
         total++;
@@ -89,11 +96,35 @@ export function computeHistory(state, fromKey, toKey, todayKey) {
     byTask.set(run.task.id, t);
   }
 
+  // Weekly goals: each finished week in the range that fell short counts the shortfall as missed.
+  const weekStartDay = state.settings?.weekStart ?? 1;
+  for (const task of state.tasks.filter(isPerWeek)) {
+    if (!firstSeen.has(task.id)) continue;
+    const t = byTask.get(task.id) || {
+      task, done: 0, missed: 0, skipped: 0, open: 0,
+      levels: {}, minutes: 0, goal: 0, goalMet: 0, timeRuns: 0, doneDays: [], excused: 0,
+    };
+    const times = task.schedule.times || 1;
+    t.weeks = 0;
+    t.weeksMet = 0;
+    for (let wk = weekStart(fromKey, weekStartDay); wk <= toKey; wk = addDays(wk, 7)) {
+      if (wk < fromKey || addDays(wk, 6) >= todayKey || addDays(wk, 6) > toKey) continue; // only whole, finished weeks
+      if (task.startDate && wk < weekStart(task.startDate, weekStartDay)) continue;
+      const done = weekDone(state, task, wk);
+      t.weeks++;
+      if (done >= times) t.weeksMet++;
+      else if (weekExcused(state, task, wk)) t.excused += times - done;
+      else t.missed += times - done;
+    }
+    byTask.set(task.id, t);
+  }
+
   const tasks = [...byTask.values()].map((t) => ({
     ...t,
     days: diffDays(firstSeen.get(t.task.id), toKey) + 1, // days the task existed in this range
     counted: t.done + t.missed,
     rate: t.done + t.missed ? t.done / (t.done + t.missed) : null,
+    streak: streak(state, t.task, todayKey),
   }));
   const repeating = tasks.filter((t) => isRepeating(t.task))
     .sort((a, b) => (a.task.order ?? 0) - (b.task.order ?? 0));
@@ -173,6 +204,8 @@ export function reportText(h) {
     if (t.skipped) bits.push(`${t.skipped} skipped`);
     const lv = Object.entries(t.levels);
     if (lv.length) bits.push(`levels done: ${lv.map(([n, c]) => `${n} ${c}`).join(', ')}`);
+    if (t.weeks) bits.push(`weekly goal met ${t.weeksMet} of ${t.weeks} weeks`);
+    if (t.streak > 1) bits.push(`current streak ${t.streak} ${isPerWeek(t.task) ? 'weeks' : 'in a row'}`);
     if (t.task.timeGoal) bits.push(`time: ${formatMinutes(t.minutes)} of ${formatMinutes(t.goal)} goal, goal met ${t.goalMet} of ${t.timeRuns} times`);
     lines.push(`- ${t.task.title} (${describeSchedule(t.task)}): ${bits.join('; ')}.`);
   }

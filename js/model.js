@@ -113,6 +113,8 @@ export function isScheduledOn(task, key) {
     }
     case 'whenever':
       return (s.dates || []).includes(key);
+    case 'perweek':
+      return true; // on the list every day until this week's goal is met (see itemsForDay)
     case 'monthly': {
       // By weekday, e.g. first or last Saturday of the month.
       if (s.by === 'weekday') return ruleMatches({ weekday: s.weekday ?? 6, nth: s.nth ?? 1 }, key);
@@ -141,6 +143,7 @@ export function describeSchedule(task) {
     }
     case 'interval': return s.every === 1 ? 'Every day' : `Every ${s.every} days`;
     case 'whenever': return 'Whenever you need it';
+    case 'perweek': return `${s.times || 1}× a week, any days`;
     case 'monthly': {
       if (s.by === 'weekday') {
         const nth = { 1: 'first', 2: 'second', 3: 'third', 4: 'fourth', last: 'last' }[s.nth ?? 1];
@@ -303,6 +306,88 @@ function repeatingRunOn(state, task, key) {
   return null;
 }
 
+// ---------- A few times a week ----------
+// schedule { type: 'perweek', times }: on the list every day until done `times` times
+// this week. Not doing it on a given day isn't a miss; only falling short for the week is.
+
+export function weekStart(key, startDay = 1) {
+  return addDays(key, -((weekday(key) - startDay + 7) % 7));
+}
+
+// How many times it was done in the week containing `key` (leaving out `except`).
+export function weekDone(state, task, key, except = null) {
+  const start = weekStart(key, state.settings?.weekStart ?? 1);
+  let n = 0;
+  for (let i = 0; i < 7; i++) {
+    const k = addDays(start, i);
+    if (k === except) continue;
+    const e = state.days[k]?.items?.[task.id];
+    if (e?.done) n++;
+  }
+  return n;
+}
+
+export function isPerWeek(task) {
+  return task.schedule?.type === 'perweek';
+}
+
+// ---------- Streaks ----------
+// Runs done in a row. Skips, days off and pauses don't break a streak,
+// and today's unfinished run doesn't either. "A few times a week" tasks count weeks.
+
+export function streak(state, task, todayKey) {
+  if (!isRepeating(task) || task.schedule.type === 'whenever') return 0;
+  const first = task.startDate || '2000-01-01';
+  if (isPerWeek(task)) {
+    const times = task.schedule.times || 1;
+    let n = 0;
+    let wk = weekStart(todayKey, state.settings?.weekStart ?? 1);
+    if (weekDone(state, task, todayKey) >= times) n++; // this week already counts once met
+    for (let i = 0; i < 260; i++) {
+      wk = addDays(wk, -7);
+      if (addDays(wk, 6) < first) break;
+      const done = weekDone(state, task, wk);
+      if (done >= times) n++;
+      else if (!weekExcused(state, task, wk)) break;
+    }
+    return n;
+  }
+  let n = 0;
+  const seen = new Set();
+  for (let i = 0, k = todayKey; i < 730 && k >= first; i++, k = addDays(k, -1)) {
+    const run = repeatingRunOn(state, task, k);
+    if (!run || seen.has(run.start)) continue;
+    seen.add(run.start);
+    const e = run.entry;
+    if (e.done) n++;
+    else if (e.skipped || isDayOff(state, k) || run.start === todayKey || run.start > todayKey) continue;
+    else if (k === todayKey) continue; // a multi-day run still in progress
+    else break;
+  }
+  return n;
+}
+
+// A week with days off or a pause doesn't break a weekly streak.
+export function weekExcused(state, task, wk) {
+  for (let i = 0; i < 7; i++) {
+    const k = addDays(wk, i);
+    if (isDayOff(state, k) || isPaused(task, k)) return true;
+  }
+  return false;
+}
+
+// ---------- Ordering ----------
+// Put the given tasks in this order, keeping everything else where it was.
+export function reorderTasks(state, ids) {
+  const all = [...state.tasks].sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || (a.createdAt ?? 0) - (b.createdAt ?? 0));
+  all.forEach((t, i) => { t.order = i + 1; });
+  const moving = ids.map((id) => state.tasks.find((t) => t.id === id)).filter(Boolean);
+  const slots = moving.map((t) => t.order).sort((a, b) => a - b);
+  const now = Date.now();
+  moving.forEach((t, i) => { if (t.order !== slots[i]) { t.order = slots[i]; t.updatedAt = now; } });
+  // Renumbering can touch other tasks too; mark them changed only if they moved.
+}
+
 // ---------- Whenever tasks ----------
 // A saved task (like a packing list) with no schedule. Add it to a day when you need it;
 // each time starts with a fresh checklist.
@@ -336,7 +421,7 @@ export function upcomingItems(state, todayKey, days = 7) {
   const last = addDays(todayKey, days);
   const out = [];
   for (const task of state.tasks) {
-    if (task.archived || onToday.has(task.id)) continue;
+    if (task.archived || onToday.has(task.id) || isPerWeek(task)) continue;
     const s = task.schedule || { type: 'once' };
     let due = null;
     if (s.type === 'once') {
@@ -377,6 +462,7 @@ export function itemsForDay(state, key, todayKey) {
     } else {
       const run = repeatingRunOn(state, task, key);
       if (!run) continue;
+      if (s.type === 'perweek' && !run.entry.done && weekDone(state, task, key, key) >= (s.times || 1)) continue;
       out.push({
         task, entry: entryAsOf(run.entry, key), ref: { start: run.start, on: key },
         dayNum: run.dayNum, span: run.span, carried: false,
@@ -498,10 +584,92 @@ export function addQuickTask(state, title, key) {
 }
 
 // "tomorrow ship the package" -> { title: "ship the package", key: tomorrow }
+// Understands a day at the start or end: "tomorrow ship package", "friday call mom",
+// "pay rent on the 1st"... Also "in 3 days", "next week", "nov 12", "12/24".
+const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+const MONTH_NAMES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const DAY_WORD = '(?:sun(?:day)?|mon(?:day)?|tue(?:s|sday)?|wed(?:nesday)?|thu(?:rs?|rsday)?|fri(?:day)?|sat(?:urday)?)';
+const MONTH_WORD = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
+const NUM_WORDS = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+const DAY_FULL = '(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)';
+// At the end of a task, short day names need "on" ("fix the mon" stays as typed).
+const when = (atEnd) => [
+  `(?:today|tonight)`,
+  `(?:tomorrow|tmrw|tmr)`,
+  atEnd ? `(?:on\\s+(?:next\\s+|this\\s+)?${DAY_WORD}|(?:next\\s+|this\\s+)?${DAY_FULL})` : `(?:on\\s+)?(?:next\\s+|this\\s+)?${DAY_WORD}`,
+  `in\\s+(?:\\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten)\\s+(?:days?|weeks?)`,
+  `next\\s+week`,
+  `(?:on\\s+)?${MONTH_WORD}\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?`,
+  `(?:on\\s+)?(?:the\\s+)?\\d{1,2}(?:st|nd|rd|th)`,
+  `(?:on\\s+)?\\d{1,2}\\/\\d{1,2}`,
+].join('|');
+const START_RE = new RegExp(`^(${when(false)})\\b[\\s,:-]+(.+)$`, 'i');
+const END_RE = new RegExp(`^(.+?)[\\s,-]+(${when(true)})$`, 'i');
+
+function whenToKey(when, key) {
+  const w = when.toLowerCase().replace(/^on\s+/, '').replace(/^the\s+/, '').trim();
+  if (w === 'today' || w === 'tonight') return key;
+  if (/^(tomorrow|tmrw|tmr)$/.test(w)) return addDays(key, 1);
+  if (w === 'next week') return addDays(key, ((1 - weekday(key) + 7) % 7) || 7); // next Monday
+  let m = w.match(/^in\s+(\S+)\s+(day|week)s?$/);
+  if (m) {
+    const n = Number(m[1]) || NUM_WORDS[m[1]] || 1;
+    return addDays(key, n * (m[2] === 'week' ? 7 : 1));
+  }
+  m = w.match(/^(next\s+|this\s+)?([a-z]+)$/);
+  if (m && DAY_NAMES.includes(m[2].slice(0, 3))) {
+    const target = DAY_NAMES.indexOf(m[2].slice(0, 3));
+    // "friday" is the coming Friday (today if it's Friday); "next friday" is a week later than that.
+    let ahead = (target - weekday(key) + 7) % 7;
+    if (m[1]?.startsWith('next')) ahead += 7;
+    return addDays(key, ahead);
+  }
+  const [y, mo, d] = key.split('-').map(Number);
+  const pick = (month, day) => {
+    // The next time that date comes around.
+    let year = y;
+    const k = (yy) => `${yy}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    if (k(year) < key) year++;
+    return k(year);
+  };
+  m = w.match(/^([a-z]+)\.?\s+(\d{1,2})/);
+  if (m) {
+    const month = MONTH_NAMES.indexOf(m[1].slice(0, 3)) + 1;
+    const day = Number(m[2]);
+    if (month && day >= 1 && day <= 31) return pick(month, day);
+  }
+  m = w.match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (m) {
+    const month = Number(m[1]);
+    const day = Number(m[2]);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) return pick(month, day);
+  }
+  m = w.match(/^(\d{1,2})(st|nd|rd|th)$/);
+  if (m) {
+    const day = Number(m[1]);
+    if (day < 1 || day > 31) return null;
+    let month = mo;
+    let year = y;
+    if (day < d) { month++; if (month > 12) { month = 1; year++; } }
+    const last = new Date(year, month, 0).getDate();
+    return `${year}-${String(month).padStart(2, '0')}-${String(Math.min(day, last)).padStart(2, '0')}`;
+  }
+  return null;
+}
+
 export function parseQuickAdd(text, key) {
-  const m = text.trim().match(/^(tomorrow|tmrw|tmr)\b[\s,:-]*(.+)$/i);
-  if (m) return { title: m[2].trim(), key: addDays(key, 1) };
-  return { title: text.trim(), key };
+  const t = text.trim();
+  let m = t.match(START_RE);
+  if (m) {
+    const k = whenToKey(m[1], key);
+    if (k && m[2].trim()) return { title: m[2].trim(), key: k };
+  }
+  m = t.match(END_RE);
+  if (m) {
+    const k = whenToKey(m[2], key);
+    if (k && m[1].trim()) return { title: m[1].trim(), key: k };
+  }
+  return { title: t, key };
 }
 
 export function nextOrder(state) {

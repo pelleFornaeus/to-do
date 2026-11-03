@@ -2,7 +2,10 @@
 
 A daily to-do list that runs entirely in your browser. No AI, no server, no account needed.
 
-- **Quick add and check off.** Finished tasks clear off at the end of the day. Type `tomorrow ship the package` to put a task on tomorrow's list.
+- **Quick add and check off.** Finished tasks clear off at the end of the day. Type a day before or after the task to plan it: `tomorrow ship the package`, `call mom friday`, `dentist in 2 weeks`, `pay rent on the 1st`, `nov 12 haircut`. Checking something off shows an Undo button for a few seconds.
+- **A few times a week.** e.g. gym 3× a week, any days. It stays on the list until the week's goal is met.
+- **Streaks.** 🔥 shows how many times in a row (or weeks in a row) you've kept a task up. Skips, days off and pauses don't break it.
+- **Reorder.** Drag the ⋮⋮ handle on Today or Tasks.
 - **Repeating tasks.** Every day, certain weekdays (e.g. gym on Sun, Tue, Thu), every few days, or monthly (a date like the 1st, the last day, or a weekday like the last Saturday).
 - **Steps.** "Clean the kitchen" can have "Do the dishes", "Take out the trash" and so on. Checking every step finishes the task.
 - **Levels.** Light, normal, deep, complete (or your own names). Each step picks which levels it belongs to, and rules set the level by day, e.g. deep every Saturday and complete on the last Saturday of the month.
