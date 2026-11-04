@@ -245,5 +245,7 @@ export const sync = {
   },
 
   syncNow,
+  // A signed-in request to Supabase (database or functions), for features like reminders.
+  request: (path, opts) => request(path, opts),
   pending() { return meta ? Object.keys(meta.dirty).length : 0; },
 };

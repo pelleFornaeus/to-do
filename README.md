@@ -14,6 +14,11 @@ A daily to-do list that runs entirely in your browser. No AI, no server, no acco
 - **History.** A History tab shows completion rates, per-task results (e.g. gym about 2.5× a week), levels done and time logged, with charts for 7 days to all time. "Copy summary for Claude" copies a text report to paste into Claude for a written review.
 - **Do it early.** "Coming up" on the Today tab shows what's due in the next week. Check something off early (gym on Friday instead of Sunday) and it counts for the day it was due.
 - **Whenever tasks.** Saved checklists with no schedule, like packing a suitcase. Tap "Add to today" (or plan days) when you need one; each time starts unchecked.
+- **Travel mode.** "Going away? Travel mode" on Today pauses the tasks you pick between two dates (keep the gym going if you like) and can put your packing list on the day you choose. "I'm back" ends it early.
+- **Weekly review.** At the start of each week a card sums up last week. The full review (History → Weekly review) shows what went well, what needs attention, streaks and the week ahead.
+- **Year in review.** History → "2026 in review": tasks done, perfect days, top task, longest streak, best month, time logged.
+- **Reminders.** Set "Remind me at" on a task (e.g. Gym at 6pm) and an optional morning summary in Settings → Reminders. On iPhone this needs the home-screen app and the one-time setup below.
+- **Meal planner link.** Settings → Meal planner shows today's meals and how much is left on the [meal planner](https://pellefornaeus.github.io/meal-planner/)'s shopping list on Today, with a button to add "Grocery shopping" to your list. It only reads from the meal planner (same sign-in), using the meal planner's own code.
 - **Days off.** Mark any day (a sick day, a travel day) as a day off from the Today tab. Nothing on it counts as missed.
 - **Pause a task.** Pause the kitchen while you travel and keep the gym going. Pause from the task's details on Today, or set dates in the task editor. Paused days don't count.
 - **Clear history.** Settings > History starts your history fresh from a chosen date.
@@ -33,6 +38,17 @@ Sync uses a free [Supabase](https://supabase.com) project. The project address a
 1. In Supabase, open **SQL Editor**, paste in [`supabase/setup.sql`](supabase/setup.sql) and press **Run**. This creates the table, and each account can only see its own rows.
 2. Open **Authentication → URL Configuration** and set **Site URL** to `https://pellefornaeus.github.io/to-do/`. That's where the "confirm your email" link takes you.
 
+### Reminders setup (one time)
+
+Reminders are sent by a small Supabase function, because a phone can't schedule them on its own.
+
+1. In Supabase, open **SQL Editor**, paste in [`supabase/reminders.sql`](supabase/reminders.sql) and press **Run**. This makes the tables and checks for due reminders every 5 minutes.
+2. Open **Edge Functions → Deploy a new function → Via Editor**. Name it exactly `todo-reminders` (the name can't be changed later), paste in [`supabase/functions/todo-reminders/index.ts`](supabase/functions/todo-reminders/index.ts) and deploy.
+3. In the function's **Details**, turn **Verify JWT** off and save. The function checks sign-ins itself.
+4. In the app (from the home screen on iPhone): **Settings → Reminders → Turn on notifications**, then **Send a test**.
+
+The function loads the app's own code from the website when it's deployed, so after big app updates, open it and press **Deploy** again.
+
 ## For developers
 
 Plain HTML, CSS and JavaScript with no build step.
@@ -45,5 +61,7 @@ npm test    # runs the logic tests (Node 20+)
 - `js/model.js`: tasks, schedules, levels, multi-day runs, time goals
 - `js/app.js`: the interface
 - `js/store.js`: saving to the browser
+- `js/meals.js`: reads the meal planner's synced data (`meal_records`) and loads its code from `../meal-planner/js/` on the same site.
+- `js/notify.js`, `supabase/functions/todo-reminders/`: reminders (Web Push).
 - `js/records.js`, `js/sync.js`: syncing through Supabase. Data is split into small records (a task, a day, one task's progress on a day). The newest change to each record wins, so two devices can check off different things at the same time.
 - `sw.js`: offline support. Online it always loads the latest files; offline it uses the saved copy. Bump `CACHE` and add new files to `ASSETS` when releasing.

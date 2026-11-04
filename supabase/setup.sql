@@ -38,3 +38,4 @@ end $$;
 drop trigger if exists records_touch on public.records;
 create trigger records_touch before insert or update on public.records
   for each row execute function public.records_touch();
+

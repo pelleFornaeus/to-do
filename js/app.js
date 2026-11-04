@@ -1,7 +1,9 @@
 import { store } from './store.js';
 import { sync } from './sync.js';
+import { MEAL_APP_URL, hasMealData, mealSummary, meals, refreshMeals } from './meals.js';
+import { disablePush, enablePush, isHomeScreenApp, pushOn, pushSupported, refreshPush, testPush } from './notify.js';
 import {
-  computeHistory, perWeek, rangeStart, reportText, shortDate, weeklyBuckets,
+  computeHistory, perWeek, rangeStart, reportText, shortDate, weeklyBuckets, weekReview, yearReview, MONTH_NAMES,
 } from './history.js';
 import {
   WEEKDAYS, addDays, formatDay, formatLongDate, formatMinutes, logicalToday,
@@ -9,7 +11,7 @@ import {
 import {
   DEFAULT_LEVELS, levelRules, addMinutes, addQuickTask, deleteTask, describeSchedule, getEntry,
   activePause, addWheneverDate, clearHistoryBefore, isWhenever, nextWheneverDate,
-  removeWheneverDate, upcomingItems, isPerWeek, reorderTasks, streak, weekDone, isDayOff, isPaused, pauseTask, resumeTask, setDayOff,
+  removeWheneverDate, upcomingItems, activeTrip, endTrip, startTrip, isPerWeek, reorderTasks, streak, weekDone, isDayOff, isPaused, pauseTask, resumeTask, setDayOff,
   hasLevels, isRepeating, itemsForDay, moveOnceTask, nextOrder, setDone, setLevel,
   parseQuickAdd, setGoal, setMinutes, setSkipped, snapshotPlanned, startTimer, stopTimer,
   toggleSub, uid, visibleSubtasks,
@@ -26,6 +28,9 @@ const ui = {
   expanded: new Set(),
   doneOpen: false,
   upcomingOpen: true,
+  travel: null, // travel mode form
+  page: null, // 'week' or 'year' inside History
+  year: null,
   editor: null, // draft task being edited
   histRange: '30',
 };
@@ -64,9 +69,9 @@ function renderAll() {
     b.classList.toggle('active', b.dataset.tab === ui.tab);
   });
   const main = $('#main');
-  if (ui.tab === 'today') main.innerHTML = renderToday();
+  if (ui.tab === 'today') main.innerHTML = ui.travel ? renderTravel() : renderToday();
   else if (ui.tab === 'tasks') main.innerHTML = renderTasks();
-  else if (ui.tab === 'history') main.innerHTML = renderHistory();
+  else if (ui.tab === 'history') main.innerHTML = ui.page === 'week' ? renderWeekReview() : ui.page === 'year' ? renderYearReview() : renderHistory();
   else main.innerHTML = renderSettings();
   renderEditor();
 }
@@ -92,6 +97,9 @@ function renderToday() {
       </div>
       <button class="icon-btn" data-action="next-day" aria-label="Next day">›</button>
     </header>
+
+    ${key === t ? renderTripBanner(t) : ''}
+    ${key === t ? renderReviewCard(t) : ''}
 
     ${dayOff ? `
       <div class="day-off-banner">
@@ -125,10 +133,136 @@ function renderToday() {
       ${key === t ? '<p class="hint">Finished tasks clear off at the end of the day.</p>' : ''}
     ` : ''}
 
+    ${renderMealBox(key)}
+
     ${key === t ? renderUpcoming(t) : ''}
 
-    ${!dayOff ? '<p class="day-off-link"><button class="link" data-action="day-off">Mark as a day off (sick, travel…)</button></p>' : ''}
+    <p class="day-off-link">
+      ${!dayOff ? '<button class="link" data-action="day-off">Mark as a day off (sick…)</button>' : ''}
+      ${key >= t && !activeTrip(S(), t) ? '<button class="link" data-action="travel">Going away? Travel mode</button>' : ''}
+    </p>
   `;
+}
+
+// ---------- Meal planner ----------
+const mealView = new Map(); // day -> last summary shown, so redraws don't flicker
+
+function mealsOn() {
+  return S().settings.mealLink && sync.user;
+}
+
+function renderMealBox(key) {
+  if (!mealsOn()) return '';
+  queueMicrotask(() => fillMeals(key));
+  return `<div id="meal-box" data-day="${key}">${mealView.has(key) ? mealBoxHtml(key, mealView.get(key)) : ''}</div>`;
+}
+
+async function fillMeals(key) {
+  try {
+    const sum = await mealSummary(key);
+    const box = $('#meal-box');
+    if (!box || box.dataset.day !== key) return;
+    const html = mealBoxHtml(key, sum);
+    mealView.set(key, sum);
+    if (box.innerHTML !== html) box.innerHTML = html;
+  } catch (e) {
+    console.error('Meal plan', e);
+  }
+}
+
+function mealBoxHtml(key, sum) {
+  if (!sum) {
+    return hasMealData() || meals.lastError
+      ? `<div class="card meal-card"><p class="hint flush">${esc(meals.lastError || 'Loading your meal plan…')}</p></div>`
+      : '';
+  }
+  const t = today();
+  const label = { cook: 'Cook', leftover: 'Leftovers' };
+  const groceryTask = itemsForDay(S(), key, t).find((i) => /^grocery shopping/i.test(i.task.title));
+  return `
+    <div class="card meal-card">
+      <div class="meal-head"><strong>🍽️ Meals ${key === t ? 'today' : esc(formatDay(key, t).toLowerCase())}</strong>
+        <a class="link small" href="${esc(MEAL_APP_URL)}">Meal planner ›</a></div>
+      ${sum.entries.length ? `<ul class="plain meal-list">${sum.entries.map((e) => `
+        <li><span class="muted meal-slot">${esc(e.slot)}</span><span>${esc(e.name)}</span>${label[e.kind] ? `<span class="badge">${label[e.kind]}</span>` : ''}</li>`).join('')}</ul>`
+    : '<p class="hint flush">No meals planned.</p>'}
+      ${key === t && sum.shopLeft ? `
+        <div class="meal-shop">
+          <span>🛒 ${sum.shopLeft} item${sum.shopLeft === 1 ? '' : 's'} left on your shopping list</span>
+          ${groceryTask ? '' : `<button class="btn small" data-action="add-grocery" data-count="${sum.shopLeft}">Add to today</button>`}
+        </div>` : ''}
+    </div>`;
+}
+
+function renderTripBanner(t) {
+  const trip = activeTrip(S(), t);
+  if (!trip) return '';
+  const started = trip.from <= t;
+  const n = trip.taskIds.length;
+  return `
+    <div class="trip-banner">
+      <div><strong>✈️ ${started ? 'Traveling' : 'Trip coming up'}${trip.note ? `: ${esc(trip.note)}` : ''}</strong><br>
+      <span class="small">${esc(shortDate(trip.from))} – ${esc(shortDate(trip.to))} · ${n} task${n === 1 ? '' : 's'} paused</span></div>
+      <button class="btn small" data-action="end-trip">${started ? 'I’m back' : 'Cancel trip'}</button>
+    </div>`;
+}
+
+// On the first two days of the week, a short look back at last week.
+function renderReviewCard(t) {
+  const startDay = S().settings.weekStart ?? 1;
+  const wk = addDays(t, -((new Date(`${t}T12:00`).getDay() - startDay + 7) % 7));
+  if (addDays(wk, 1) < t || S().settings.reviewSeen === wk) return '';
+  const r = weekReview(S(), t);
+  const o = r.h.overall;
+  if (!(o.done + o.missed)) return '';
+  return `
+    <div class="review-card">
+      <button class="icon-btn small review-x" data-action="review-dismiss" data-week="${wk}" aria-label="Dismiss">×</button>
+      <strong>Last week: ${o.done} of ${o.done + o.missed} done (${pctText(o.rate)})</strong>
+      <span class="small">${r.best.length ? `Nailed it: ${r.best.map((x) => esc(x.task.title)).join(', ')}. ` : ''}${r.missed.length ? `Missed most: ${esc(r.missed[0].task.title)}.` : 'Nothing missed!'}</span>
+      <button class="link" data-action="open-week-review">See the full review</button>
+    </div>`;
+}
+
+function renderTravel() {
+  const d = ui.travel;
+  const t = today();
+  const repeating = S().tasks.filter((x) => isRepeating(x) && !isWhenever(x) && !x.archived)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const lists = S().tasks.filter((x) => isWhenever(x) && !x.archived);
+  return `
+    <header class="page-header"><button class="link back" data-action="travel-cancel">‹ Today</button></header>
+    <h1 class="page-title">Travel mode</h1>
+    <p class="hint">Pause what you won't do while you're away. Everything comes back on its own when the trip ends.</p>
+    <div class="card">
+      <div class="pause-add">
+        <label class="field"><span>Leaving</span><input type="date" data-travel="from" value="${esc(d.from)}" min="${esc(t)}" /></label>
+        <label class="field"><span>Back</span><input type="date" data-travel="to" value="${esc(d.to)}" min="${esc(d.from)}" /></label>
+      </div>
+      <label class="field"><span>Where to? (optional)</span><input type="text" data-travel="note" value="${esc(d.note)}" placeholder="e.g. Chicago" /></label>
+    </div>
+    <div class="card">
+      <h2 class="section tight">Pause while away</h2>
+      ${repeating.length ? repeating.map((x) => `
+        <label class="field row"><input type="checkbox" data-travel-task="${x.id}" ${d.taskIds.includes(x.id) ? 'checked' : ''} /><span>${esc(x.title)} <span class="muted small">· ${esc(describeSchedule(x))}</span></span></label>`).join('')
+    : '<p class="hint">No repeating tasks yet.</p>'}
+      <p class="hint">Untick anything you'll keep doing, like the gym.</p>
+    </div>
+    ${lists.length ? `
+    <div class="card">
+      <h2 class="section tight">Packing list</h2>
+      <label class="field"><span>Add a checklist</span>
+        <select data-travel="packId">
+          <option value="">None</option>
+          ${lists.map((x) => `<option value="${x.id}" ${d.packId === x.id ? 'selected' : ''}>${esc(x.title)}</option>`).join('')}
+        </select>
+      </label>
+      <label class="field"><span>On</span><input type="date" data-travel="packDate" value="${esc(d.packDate)}" /></label>
+    </div>` : ''}
+    <div class="btn-row">
+      <button class="btn primary" data-action="travel-start">Start travel mode</button>
+      <button class="btn" data-action="travel-cancel">Cancel</button>
+    </div>`;
 }
 
 function renderUpcoming(t) {
@@ -159,6 +293,7 @@ function renderItem({ task, entry, carried, ref, dayNum, span, due }, key, dragg
   if (isPerWeek(task)) badges.push(`<span class="badge">${weekDone(S(), task, ref.start)} of ${task.schedule.times || 1} this week</span>`);
   const st = isRepeating(task) && !isWhenever(task) ? streak(S(), task, today()) : 0;
   if (st > 1) badges.push(`<span class="badge streak" title="In a row">🔥 ${st}${isPerWeek(task) ? ' wk' : ''}</span>`);
+  if (task.remind && !entry.done && !due) badges.push(`<span class="badge">⏰ ${esc(fmtTime(task.remind))}</span>`);
   if (entry.skipped) badges.push('<span class="badge">Skipped</span>');
 
   return `
@@ -344,6 +479,11 @@ function renderHistory() {
 
   const h = currentHistory();
   const o = h.overall;
+  const reviewButtons = `
+    <div class="btn-row review-buttons">
+      <button class="btn" data-action="open-week-review">📋 Weekly review</button>
+      <button class="btn" data-action="open-year">✨ ${new Date(`${today()}T12:00`).getFullYear()} in review</button>
+    </div>`;
   const tiles = [
     ['Tasks done', pctText(o.rate), `${o.done} done · ${o.missed} missed`],
     ['Everything done', `${o.perfectDays}`, `of ${o.activeDays} day${o.activeDays === 1 ? '' : 's'}`],
@@ -354,6 +494,7 @@ function renderHistory() {
 
   return `
     ${head}
+    ${reviewButtons}
     <div class="tiles">
       ${tiles.map(([label, value, sub]) => `
         <div class="tile"><span class="tile-label">${label}</span><strong>${value}</strong><span class="tile-sub">${sub}</span></div>`).join('')}
@@ -384,6 +525,67 @@ function renderHistory() {
       <p class="flush-p">Copy a summary of this period, then paste it into Claude to get a written review with patterns and suggestions. Nothing is sent anywhere by the app.</p>
       <div class="btn-row"><button class="btn primary" data-action="copy-report">Copy summary for Claude</button></div>
       <details class="per-day"><summary>See what gets copied</summary><pre class="report">${esc(reportText(h))}</pre></details>
+    </div>
+  `;
+}
+
+function renderWeekReview() {
+  const t = today();
+  const r = weekReview(S(), t);
+  const o = r.h.overall;
+  const list = (arr, fn) => (arr.length ? `<ul class="plain">${arr.map(fn).join('')}</ul>` : '');
+  return `
+    <header class="page-header"><button class="link back" data-action="close-page">‹ History</button></header>
+    <h1 class="page-title">Weekly review</h1>
+    <p class="muted">${esc(shortDate(r.from))} – ${esc(shortDate(r.to))}</p>
+    <div class="tiles">
+      <div class="tile"><span class="tile-label">Done</span><strong>${pctText(o.rate)}</strong><span class="tile-sub">${o.done} of ${o.done + o.missed}</span></div>
+      <div class="tile"><span class="tile-label">Everything done</span><strong>${o.perfectDays}</strong><span class="tile-sub">of ${o.activeDays} days</span></div>
+      ${o.daysOff ? `<div class="tile"><span class="tile-label">Days off</span><strong>${o.daysOff}</strong><span class="tile-sub">not counted</span></div>` : ''}
+    </div>
+    ${r.best.length ? `<div class="card"><h2 class="section tight">🏆 Nailed it</h2>${list(r.best, (x) => `<li>${esc(x.task.title)} <span class="muted">· ${x.done} of ${x.counted}</span></li>`)}</div>` : ''}
+    ${r.missed.length ? `<div class="card"><h2 class="section tight">👀 Needs attention</h2>${list(r.missed, (x) => `<li>${esc(x.task.title)} <span class="muted">· missed ${x.missed}</span></li>`)}</div>` : ''}
+    ${r.streaks.length ? `<div class="card"><h2 class="section tight">🔥 Streaks going</h2>${list(r.streaks, (x) => `<li>${esc(x.task.title)} <span class="muted">· ${x.streak} ${isPerWeek(x.task) ? 'weeks' : ''} in a row</span></li>`.replace('  ', ' '))}</div>` : ''}
+    <div class="card">
+      <h2 class="section tight">📅 This week</h2>
+      <ul class="plain week-ahead">${r.ahead.map((d) => `
+        <li><span class="wa-day">${esc(formatDay(d.key, t))}</span><span class="muted">${d.count} task${d.count === 1 ? '' : 's'}${d.oneTime.length ? ` · ${d.oneTime.map(esc).join(', ')}` : ''}</span></li>`).join('')}</ul>
+    </div>
+  `;
+}
+
+function renderYearReview() {
+  const t = today();
+  const thisYear = Number(t.slice(0, 4));
+  const firstYear = Number((Object.keys(S().days).sort()[0] || t).slice(0, 4));
+  const year = ui.year || thisYear;
+  const y = yearReview(S(), year, t);
+  const o = y.h.overall;
+  const years = [];
+  for (let yy = firstYear; yy <= thisYear; yy++) years.push(yy);
+  const card = (emoji, label, big, sub = '') => `
+    <div class="wrap-card"><span class="wrap-emoji">${emoji}</span><span class="wrap-label">${label}</span><strong class="wrap-big">${big}</strong>${sub ? `<span class="wrap-sub">${sub}</span>` : ''}</div>`;
+  const W = 640; const H = 160; const bw = 36; const gap = (W - 12 * bw) / 12;
+  const bars = y.months.map((m) => {
+    const x = (m.month - 1) * (bw + gap) + gap / 2;
+    const bh = Math.max(3, (H - 30) * (m.rate || 0));
+    return `<path d="${roundedTopBar(x, H - 24 - bh, bw, bh, 4)}" class="bar-fill" /><rect x="${x}" y="0" width="${bw}" height="${H - 24}" class="hit" data-tip="${MONTH_NAMES[m.month - 1]}: ${pctText(m.rate)} done (${m.done})" />`;
+  }).join('');
+  const labels = MONTH_NAMES.map((n, i) => `<text x="${i * (bw + gap) + gap / 2 + bw / 2}" y="${H - 6}" class="axis" text-anchor="middle">${n[0]}</text>`).join('');
+  return `
+    <header class="page-header"><button class="link back" data-action="close-page">‹ History</button></header>
+    ${years.length > 1 ? `<div class="levels range-row">${years.map((yy) => `<button class="chip ${yy === year ? 'on' : ''}" data-action="pick-year" data-year="${yy}">${yy}</button>`).join('')}</div>` : ''}
+    <div class="wrap">
+      <div class="wrap-hero"><span>Your</span><strong>${year}</strong><span>${year === thisYear ? 'so far' : 'in review'}</span></div>
+      ${card('✅', 'Tasks done', o.done.toLocaleString(), `${pctText(o.rate)} of everything on your list`)}
+      ${card('🌟', 'Perfect days', o.perfectDays, 'days you finished everything')}
+      ${y.top ? card('🏅', 'Your top task', esc(y.top.task.title), `done ${y.top.done} times`) : ''}
+      ${y.longest?.bestStreak > 1 ? card('🔥', 'Longest streak', `${y.longest.bestStreak} ${isPerWeek(y.longest.task) ? 'weeks' : 'in a row'}`, esc(y.longest.task.title)) : ''}
+      ${y.bestMonth ? card('📆', 'Most consistent month', MONTH_NAMES[y.bestMonth.month - 1], `${pctText(y.bestMonth.rate)} done`) : ''}
+      ${y.timeTasks.map((x) => card('⏱️', `Time on ${esc(x.task.title)}`, formatMinutes(x.minutes), `goal met ${x.goalMet} of ${x.timeRuns} times`)).join('')}
+      ${y.busiestDay?.done ? card('💪', 'Busiest day', esc(formatLongDate(y.busiestDay.key)), `${y.busiestDay.done} things done`) : ''}
+      ${o.daysOff ? card('🛌', 'Days off', o.daysOff, 'rest counts too') : ''}
+      ${y.months.length ? `<div class="card"><h2 class="section tight">Month by month</h2><svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Share done each month">${bars}${labels}</svg></div>` : ''}
     </div>
   `;
 }
@@ -527,6 +729,49 @@ function syncStatusText() {
   }
 }
 
+const fmtTime = (hhmm) => {
+  const [h, m] = hhmm.split(':').map(Number);
+  return new Date(2000, 0, 1, h, m).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+};
+
+function renderRemindersCard() {
+  const st = S().settings;
+  let body;
+  if (!sync.user) body = '<p class="hint">Reminders come from your sync account, so sign in under Sync first.</p>';
+  else if (!pushSupported() || (!isHomeScreenApp() && /iPhone|iPad/.test(navigator.userAgent))) {
+    body = '<p class="hint">On iPhone, reminders work in the app opened from your home screen (iOS 16.4 or newer). Open it from there and come back here.</p>';
+  } else if (pushOn()) {
+    body = `
+      <p class="flush-p sync-status ok">Notifications are on for this device.</p>
+      <label class="field"><span>Morning summary</span><input type="time" data-setting-text="summaryAt" value="${esc(st.summaryAt || '')}" /></label>
+      <p class="hint">A list of what's on today, at this time. Leave it empty for none. To be reminded about a single task, set “Remind me at” in the task.</p>
+      <p class="form-msg" id="push-msg" hidden></p>
+      <div class="btn-row">
+        <button class="btn" data-action="push-test">Send a test</button>
+        <button class="btn" data-action="push-off">Turn off on this device</button>
+      </div>`;
+  } else {
+    body = `
+      <p class="hint">Get a notification at the time you choose for a task, like “Gym” at 6pm, and an optional morning summary.</p>
+      <p class="form-msg" id="push-msg" hidden></p>
+      <div class="btn-row"><button class="btn primary" data-action="push-on">Turn on notifications</button></div>`;
+  }
+  return `<div class="card"><h2 class="section tight">Reminders</h2>${body}</div>`;
+}
+
+async function pushAction(fn, okMsg) {
+  const msg = $('#push-msg');
+  const say = (text, isError) => { if (msg) { msg.textContent = text; msg.hidden = false; msg.classList.toggle('error', !!isError); } };
+  say('One moment…');
+  try {
+    const r = await fn();
+    render();
+    if (okMsg) toast(typeof okMsg === 'function' ? okMsg(r) : okMsg);
+  } catch (e) {
+    say(e.message, true);
+  }
+}
+
 function renderSyncCard() {
   const user = sync.user;
   if (user) {
@@ -594,6 +839,15 @@ function renderSettings() {
     <header class="page-header"><h1>Settings</h1></header>
 
     ${renderSyncCard()}
+    ${renderRemindersCard()}
+    <div class="card">
+      <h2 class="section tight">Meal planner</h2>
+      <label class="field row">
+        <input type="checkbox" data-setting="mealLink" ${st.mealLink ? 'checked' : ''} ${sync.user ? '' : 'disabled'} />
+        <span>Show today's meals and shopping list on Today</span>
+      </label>
+      <p class="hint">${sync.user ? 'Sign in to the meal planner with the same email as here. The list is read from it, nothing is changed there.' : 'Sign in under Sync first (with the same email as the meal planner).'}</p>
+    </div>
 
     <div class="card">
       <label class="field">
@@ -668,6 +922,7 @@ function blankDraft() {
     useTime: false,
     timeGoal: { minutes: 60, byDay: {} },
     spanDays: 1,
+    remind: '',
     levelDays: {},
     pauses: [],
     newPause: { from: today(), to: '' },
@@ -702,6 +957,7 @@ function draftFromTask(task) {
     useTime: !!task.timeGoal,
     timeGoal: task.timeGoal ? structuredClone({ byDay: {}, ...task.timeGoal }) : d.timeGoal,
     spanDays: task.spanDays || 1,
+    remind: task.remind || '',
     levelDays: { ...(task.levelDays || {}) },
     pauses: structuredClone(task.pauses || []),
   };
@@ -823,6 +1079,9 @@ function renderEditor() {
             </div>` : ''}
           ${s.type !== 'once' && s.type !== 'whenever' ? `
             <label class="field"><span>Starting</span><input type="date" data-bind="startDate" value="${esc(d.startDate)}" /></label>` : ''}
+          <label class="field inline"><span class="wide-label">Remind me at</span>
+            <input type="time" class="time-input" data-bind="remind" value="${esc(d.remind || '')}" />
+          </label>
           <label class="field inline"><span class="wide-label">Takes</span>
             <span class="days-input"><input type="number" min="1" max="14" inputmode="numeric" data-bind="spanDays" data-num value="${esc(d.spanDays)}" /> day(s)</span>
           </label>
@@ -1009,6 +1268,7 @@ function saveEditor() {
         return step;
       }),
     spanDays: Math.min(14, Math.max(1, Number(d.spanDays) || 1)),
+    remind: d.remind || null,
     pauses: sched.type === 'once' || sched.type === 'whenever' ? undefined : d.pauses,
     levelDays: levels.length ? cleanByDay(d.levelDays, (v) => Math.min(14, Math.max(1, Number(v) || 1))) : {},
     timeGoal: d.useTime
@@ -1058,6 +1318,8 @@ function onClick(e) {
   const tabBtn = e.target.closest('.tabbar button');
   if (tabBtn) {
     ui.tab = tabBtn.dataset.tab;
+    ui.page = null;
+    ui.travel = null;
     if (ui.tab === 'today') ui.viewKey = today();
     render();
     window.scrollTo(0, 0);
@@ -1167,6 +1429,33 @@ function onClick(e) {
     case 'go-today': ui.viewKey = today(); render(); break;
     case 'toggle-done': ui.doneOpen = !ui.doneOpen; render(); break;
     case 'toggle-upcoming': ui.upcomingOpen = !ui.upcomingOpen; render(); break;
+    case 'travel': {
+      const t = today();
+      const from = addDays(t, 1);
+      const lists = S().tasks.filter((x) => isWhenever(x) && !x.archived);
+      const pack = lists.find((x) => /pack/i.test(x.title)) || null;
+      ui.travel = {
+        from, to: addDays(from, 6), note: '',
+        taskIds: S().tasks.filter((x) => isRepeating(x) && !isWhenever(x) && !x.archived).map((x) => x.id),
+        packId: pack?.id || '', packDate: t,
+      };
+      render(); window.scrollTo(0, 0);
+      break;
+    }
+    case 'travel-cancel': ui.travel = null; render(); break;
+    case 'travel-start': {
+      const d = ui.travel;
+      if (!d.from || !d.to || d.to < d.from) { alert('Pick when you leave and when you’re back.'); break; }
+      ui.travel = null;
+      undoable(`Travel mode on: ${d.taskIds.length} task${d.taskIds.length === 1 ? '' : 's'} paused`, () => startTrip(S(), d));
+      break;
+    }
+    case 'end-trip': undoable('Welcome back! Tasks are back on your list.', () => endTrip(S(), today())); break;
+    case 'review-dismiss': S().settings.reviewSeen = btn.dataset.week; store.save(); break;
+    case 'open-week-review': ui.tab = 'history'; ui.page = 'week'; render(); window.scrollTo(0, 0); break;
+    case 'open-year': ui.page = 'year'; ui.year = null; render(); window.scrollTo(0, 0); break;
+    case 'pick-year': ui.year = Number(btn.dataset.year); render(); break;
+    case 'close-page': ui.page = null; render(); window.scrollTo(0, 0); break;
     case 'use-today':
       addWheneverDate(task, today());
       store.save();
@@ -1235,6 +1524,15 @@ function onClick(e) {
     case 'hist-range': ui.histRange = btn.dataset.range; render(); break;
     case 'copy-report': copyReport(); break;
     case 'sign-up': syncAuth('up'); break;
+    case 'add-grocery':
+      addQuickTask(S(), `Grocery shopping (${btn.dataset.count} items)`, today());
+      store.save();
+      toast('Added “Grocery shopping” to today');
+      break;
+    case 'meals-refresh': refreshMeals(true); break;
+    case 'push-on': pushAction(enablePush, 'Notifications are on'); break;
+    case 'push-off': pushAction(disablePush, 'Notifications are off on this device'); break;
+    case 'push-test': pushAction(testPush, (n) => (n ? 'Test sent. It should arrive in a few seconds.' : 'Nothing was sent. Try turning notifications off and on again.')); break;
     case 'sync-now': sync.syncNow(); break;
     case 'sign-out':
       if (confirm('Sign out? Your data stays on this device, but it stops syncing.')) {
@@ -1268,11 +1566,28 @@ function onSubmit(e) {
 
 function onChange(e) {
   const el = e.target;
+  if (ui.travel && (el.dataset.travel || el.dataset.travelTask)) {
+    if (el.dataset.travelTask) {
+      const ids = new Set(ui.travel.taskIds);
+      el.checked ? ids.add(el.dataset.travelTask) : ids.delete(el.dataset.travelTask);
+      ui.travel.taskIds = [...ids];
+    } else {
+      ui.travel[el.dataset.travel] = el.value;
+      if (el.dataset.travel === 'from' && ui.travel.to < el.value) { ui.travel.to = el.value; render(); }
+    }
+    return;
+  }
   if (el.dataset.bind) { bindInput(el); return; }
+  if (el.dataset.settingText) {
+    S().settings[el.dataset.settingText] = el.value || null;
+    store.save();
+    return;
+  }
   if (el.dataset.setting) {
     const k = el.dataset.setting;
     S().settings[k] = el.type === 'checkbox' ? el.checked : Number(el.value);
     if (k === 'dayStartHour') ui.viewKey = today();
+    if (k === 'mealLink' && el.checked) refreshMeals(true);
     store.save();
     return;
   }
@@ -1389,6 +1704,12 @@ render();
 
 // Sync: redraw when changes arrive from another device, and keep the status line current.
 sync.init(store, () => store.save());
+refreshPush();
+meals.onChange(() => { if (ui.tab === 'today') render(); });
+const mealTick = () => { if (mealsOn()) refreshMeals(); };
+mealTick();
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') mealTick(); });
+setInterval(mealTick, 60_000);
 let lastSyncState = sync.status.state;
 sync.onStatus((st) => {
   const el = $('#sync-status');

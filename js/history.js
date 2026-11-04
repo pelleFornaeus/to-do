@@ -73,20 +73,22 @@ export function computeHistory(state, fromKey, toKey, todayKey) {
     const entry = getEntry(state, run.start, run.task);
     const t = byTask.get(run.task.id) || {
       task: run.task, done: 0, missed: 0, skipped: 0, open: 0,
-      levels: {}, minutes: 0, goal: 0, goalMet: 0, timeRuns: 0, doneDays: [], excused: 0,
+      levels: {}, minutes: 0, goal: 0, goalMet: 0, timeRuns: 0, doneDays: [], excused: 0, cur: 0, bestStreak: 0,
     };
     const finished = entry.done && (!entry.doneOn || entry.doneOn <= toKey);
     if (entry.skipped) t.skipped++;
     else if (!finished && run.dayOff) t.excused++; // fell on a day off
     else if (entry.done && (!entry.doneOn || entry.doneOn <= toKey)) {
       t.done++;
+      t.cur++;
+      t.bestStreak = Math.max(t.bestStreak, t.cur);
       t.doneDays.push(entry.doneOn || run.start);
       if (run.task.levels?.length && entry.level != null) {
         const name = run.task.levels[entry.level] ?? `Level ${entry.level + 1}`;
         t.levels[name] = (t.levels[name] || 0) + 1;
       }
     } else if (run.lastDay === todayKey) t.open++; // still today's to-do, not missed yet
-    else t.missed++;
+    else { t.missed++; t.cur = 0; }
     if (run.task.timeGoal && !(run.dayOff && !finished)) {
       t.timeRuns++;
       t.minutes += entry.minutes || 0;
@@ -102,19 +104,21 @@ export function computeHistory(state, fromKey, toKey, todayKey) {
     if (!firstSeen.has(task.id)) continue;
     const t = byTask.get(task.id) || {
       task, done: 0, missed: 0, skipped: 0, open: 0,
-      levels: {}, minutes: 0, goal: 0, goalMet: 0, timeRuns: 0, doneDays: [], excused: 0,
+      levels: {}, minutes: 0, goal: 0, goalMet: 0, timeRuns: 0, doneDays: [], excused: 0, cur: 0, bestStreak: 0,
     };
     const times = task.schedule.times || 1;
     t.weeks = 0;
     t.weeksMet = 0;
+    t.cur = 0;
+    t.bestStreak = 0;
     for (let wk = weekStart(fromKey, weekStartDay); wk <= toKey; wk = addDays(wk, 7)) {
       if (wk < fromKey || addDays(wk, 6) >= todayKey || addDays(wk, 6) > toKey) continue; // only whole, finished weeks
       if (task.startDate && wk < weekStart(task.startDate, weekStartDay)) continue;
       const done = weekDone(state, task, wk);
       t.weeks++;
-      if (done >= times) t.weeksMet++;
+      if (done >= times) { t.weeksMet++; t.cur++; t.bestStreak = Math.max(t.bestStreak, t.cur); }
       else if (weekExcused(state, task, wk)) t.excused += times - done;
-      else t.missed += times - done;
+      else { t.missed += times - done; t.cur = 0; }
     }
     byTask.set(task.id, t);
   }
@@ -238,3 +242,50 @@ export function rangeStart(range, todayKey, state) {
 }
 
 export { diffDays };
+
+// ---------- Weekly review ----------
+// Last full week, plus a look at the week ahead.
+export function weekReview(state, todayKey) {
+  const startDay = state.settings?.weekStart ?? 1;
+  const thisWeek = weekStart(todayKey, startDay);
+  const from = addDays(thisWeek, -7);
+  const to = addDays(thisWeek, -1);
+  const h = computeHistory(state, from, to, todayKey);
+  const ranked = h.repeating.filter((t) => t.counted >= 1);
+  const best = [...ranked].filter((t) => t.rate === 1 && t.done >= 2).sort((a, b) => b.done - a.done).slice(0, 3);
+  const missed = [...ranked].filter((t) => t.missed).sort((a, b) => b.missed - a.missed).slice(0, 3);
+  const streaks = h.repeating.filter((t) => t.streak >= 3).sort((a, b) => b.streak - a.streak).slice(0, 3);
+  const ahead = [];
+  for (let i = 0; i < 7; i++) {
+    const k = addDays(thisWeek, i);
+    if (k < todayKey) continue;
+    const items = itemsForDay(state, k, todayKey).filter((x) => !(isPerWeek(x.task) && !x.entry.done));
+    ahead.push({ key: k, count: items.length, oneTime: items.filter((x) => !isRepeating(x.task)).map((x) => x.task.title) });
+  }
+  return { from, to, h, best, missed, streaks, ahead, weekKey: thisWeek };
+}
+
+// ---------- Year in review ----------
+export function yearReview(state, year, todayKey) {
+  const from = `${year}-01-01`;
+  const to = `${year}-12-31` < todayKey ? `${year}-12-31` : todayKey;
+  const h = computeHistory(state, from, to, todayKey);
+  const months = [];
+  for (let m = 1; m <= 12; m++) {
+    const mFrom = `${year}-${String(m).padStart(2, '0')}-01`;
+    if (mFrom > to) break;
+    const last = new Date(year, m, 0).getDate();
+    const mTo = `${year}-${String(m).padStart(2, '0')}-${last}`;
+    const mh = computeHistory(state, mFrom, mTo < to ? mTo : to, todayKey);
+    if (mh.fromKey > mh.toKey || (mh.overall.done + mh.overall.missed) === 0) continue;
+    months.push({ month: m, rate: mh.overall.rate, done: mh.overall.done });
+  }
+  const bestMonth = [...months].filter((m) => m.done >= 10).sort((a, b) => b.rate - a.rate || b.done - a.done)[0] || null;
+  const top = [...h.repeating].sort((a, b) => b.done - a.done)[0] || null;
+  const longest = [...h.repeating].sort((a, b) => b.bestStreak - a.bestStreak)[0] || null;
+  const timeTasks = h.repeating.filter((t) => t.task.timeGoal && t.minutes).sort((a, b) => b.minutes - a.minutes);
+  const busiestDay = [...h.days].sort((a, b) => b.done - a.done)[0] || null;
+  return { year, from: h.fromKey, to: h.toKey, h, months, bestMonth, top, longest, timeTasks, busiestDay };
+}
+
+export const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
